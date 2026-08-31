@@ -3,6 +3,7 @@
 const ui = {
   connectionBadge: document.querySelector("#connectionBadge"),
   refreshContextButton: document.querySelector("#refreshContextButton"),
+  openToolsButton: document.querySelector("#openToolsButton"),
   scopeTitle: document.querySelector("#scopeTitle"),
   entityValue: document.querySelector("#entityValue"),
   formValue: document.querySelector("#formValue"),
@@ -29,6 +30,15 @@ const ui = {
   chatForm: document.querySelector("#chatForm"),
   questionInput: document.querySelector("#questionInput"),
   sendButton: document.querySelector("#sendButton"),
+  toolsDialog: document.querySelector("#toolsDialog"),
+  closeToolsButton: document.querySelector("#closeToolsButton"),
+  toolCompatibility: document.querySelector("#toolCompatibility"),
+  inspectToolGrid: document.querySelector("#inspectToolGrid"),
+  diagnosticToolGrid: document.querySelector("#diagnosticToolGrid"),
+  toolResultPanel: document.querySelector("#toolResultPanel"),
+  toolResultTitle: document.querySelector("#toolResultTitle"),
+  toolResult: document.querySelector("#toolResult"),
+  copyToolResultButton: document.querySelector("#copyToolResultButton"),
   settingsDialog: document.querySelector("#settingsDialog"),
   openSettingsButton: document.querySelector("#openSettingsButton"),
   closeSettingsButton: document.querySelector("#closeSettingsButton"),
@@ -52,6 +62,9 @@ const state = {
   recordingStartedAt: null,
   recordingEventCount: 0,
   recordingTimer: 0,
+  enhancedTools: [],
+  enhancedToolResult: null,
+  runningEnhancedTool: false,
   pollToken: 0,
   toastTimer: 0
 };
@@ -75,6 +88,13 @@ async function initialize() {
     restoreSession(sessionResult.value);
   }
 
+  try {
+    state.enhancedTools = await request("GET_ENHANCED_TOOLS");
+    renderEnhancedTools();
+  } catch {
+    state.enhancedTools = [];
+  }
+
   const context = await refreshContext(false);
   await restoreRecordingStatus();
   if (shouldAutoCollect(context)) {
@@ -84,6 +104,12 @@ async function initialize() {
 
 function bindEvents() {
   ui.refreshContextButton.addEventListener("click", refreshAndCollect);
+  ui.openToolsButton.addEventListener("click", openEnhancedTools);
+  ui.closeToolsButton.addEventListener("click", closeEnhancedTools);
+  ui.toolsDialog.addEventListener("click", (event) => {
+    if (event.target === ui.toolsDialog) closeEnhancedTools();
+  });
+  ui.copyToolResultButton.addEventListener("click", copyEnhancedToolResult);
   ui.collectButton.addEventListener("click", collectAndUpload);
   ui.openSettingsButton.addEventListener("click", openSettings);
   ui.closeSettingsButton.addEventListener("click", closeSettings);
@@ -216,6 +242,150 @@ function closeSettings() {
   if (ui.settingsDialog.open) ui.settingsDialog.close();
 }
 
+function openEnhancedTools() {
+  if (!state.context) {
+    showToast("请先打开 Dynamics 365 记录窗体。", "bad");
+    return;
+  }
+  renderToolCompatibility();
+  if (!ui.toolsDialog.open) ui.toolsDialog.showModal();
+}
+
+function closeEnhancedTools() {
+  if (ui.toolsDialog.open) ui.toolsDialog.close();
+}
+
+function renderEnhancedTools() {
+  const renderGroup = (container, group) => {
+    container.replaceChildren();
+    for (const tool of state.enhancedTools.filter((item) => item.group === group)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `tool-card tool-${group}`;
+      button.dataset.toolId = tool.id;
+      const title = document.createElement("strong");
+      title.textContent = tool.label;
+      const description = document.createElement("span");
+      description.textContent = tool.description;
+      button.append(title, description);
+      button.addEventListener("click", () => runEnhancedTool(tool));
+      container.append(button);
+    }
+  };
+  renderGroup(ui.inspectToolGrid, "inspect");
+  renderGroup(ui.diagnosticToolGrid, "diagnostics");
+}
+
+async function runEnhancedTool(tool) {
+  if (!tool || state.runningEnhancedTool) return;
+  const confirmed = tool.group !== "diagnostics" || window.confirm(
+    `${tool.label} 会重新载入当前 CRM 页面，未保存的更改可能丢失。确定继续吗？`);
+  if (!confirmed) return;
+  state.runningEnhancedTool = true;
+  setEnhancedToolButtonsDisabled(true);
+  ui.toolResultPanel.hidden = false;
+  ui.toolResultTitle.textContent = `正在运行 ${tool.label}…`;
+  ui.toolResult.textContent = "正在从当前 CRM 窗体读取信息。";
+  try {
+    const result = await request("RUN_ENHANCED_TOOL", { toolId: tool.id, confirmed });
+    if (result.navigated) {
+      closeEnhancedTools();
+      showToast(result.message || `${tool.label} 正在打开。`);
+      return;
+    }
+    state.enhancedToolResult = result;
+    ui.toolResultTitle.textContent = result.title || tool.label;
+    ui.toolResult.textContent = formatEnhancedToolResult(result);
+    showToast(`${tool.label} 已完成；结果已加入本次 AI 问答证据。`);
+  } catch (error) {
+    state.enhancedToolResult = null;
+    ui.toolResultTitle.textContent = `${tool.label} 未完成`;
+    ui.toolResult.textContent = error.message;
+    showToast(error.message, "bad");
+  } finally {
+    state.runningEnhancedTool = false;
+    setEnhancedToolButtonsDisabled(false);
+  }
+}
+
+function formatEnhancedToolResult(result) {
+  const data = result?.data;
+  if (result?.toolId === "form-overview" && data && !Array.isArray(data)) {
+    return [
+      `实体：${data.entityName || "—"}`,
+      `窗体类型：${data.formType ?? "—"}；未保存：${data.formDirty ? "是" : "否"}`,
+      `字段：${data.attributeCount ?? 0}；控件：${data.controlCount ?? 0}`,
+      `已修改字段：${data.changedFieldCount ?? 0}`,
+      `隐藏控件：${data.hiddenControlCount ?? 0}；只读控件：${data.disabledControlCount ?? 0}`,
+      `页签：${data.tabCount ?? 0}；分区：${data.sectionCount ?? 0}`,
+      `客户端：${data.client || "未知"}；CRM ${data.crmVersion || "未知"}`
+    ].join("\n");
+  }
+  if (Array.isArray(data) && result?.toolId === "changed-fields") {
+    if (!data.length) return "当前窗体没有尚未保存的字段。";
+    return data.map((field) => {
+      const value = result.valuesIncluded && Object.hasOwn(field, "value")
+        ? `；当前值：${JSON.stringify(field.value)}`
+        : "";
+      return `${field.label || field.name} (${field.name})${value}`;
+    }).join("\n");
+  }
+  if (Array.isArray(data) && result?.toolId === "field-states") {
+    return data.map((field) => {
+      const controls = Array.isArray(field.controls) ? field.controls : [];
+      const hidden = controls.length > 0 && controls.every((control) => control.visible === false);
+      const disabled = controls.some((control) => control.disabled === true);
+      return `${field.label || field.name} (${field.name})：${hidden ? "隐藏" : "可见"}，${disabled ? "只读" : "可编辑"}，${field.requiredLevel || "none"}${field.dirty ? "，已修改" : ""}`;
+    }).join("\n");
+  }
+  if (Array.isArray(data) && result?.toolId === "option-sets") {
+    if (!data.length) return "当前窗体没有选项字段。";
+    return data.map((field) => {
+      const options = (field.options || []).map((option) => `${option.text}=${option.value}`).join("，");
+      return `${field.label || field.name} (${field.name})\n  ${options}`;
+    }).join("\n");
+  }
+  if (result?.toolId === "table-processes" && data && !Array.isArray(data)) {
+    const processLines = (data.processes || []).map((item) => {
+      const triggers = item.triggers?.length ? `；触发：${item.triggers.join("、")}` : "";
+      return `${item.kind}：${item.name}${triggers}`;
+    });
+    const apiLines = (data.customApis || []).map((item) => `绑定自定义 API：${item.name} (${item.uniqueName})`);
+    const warningLines = (data.warnings || []).map((item) => `提示：${item}`);
+    return [...processLines, ...apiLines, ...warningLines].join("\n") || `实体 ${data.entityName} 没有返回流程或绑定自定义 API。`;
+  }
+  return JSON.stringify(data ?? result, null, 2);
+}
+
+function setEnhancedToolButtonsDisabled(disabled) {
+  for (const button of document.querySelectorAll(".tool-card")) {
+    button.disabled = disabled;
+  }
+}
+
+async function copyEnhancedToolResult() {
+  const text = ui.toolResult.textContent || "";
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("工具结果已复制。 ");
+  } catch {
+    showToast("浏览器未允许复制，请手动选择结果文本。", "bad");
+  }
+}
+
+function renderToolCompatibility() {
+  if (!state.context) {
+    ui.toolCompatibility.textContent = "识别 CRM 后可使用。";
+    return;
+  }
+  const deployment = state.context.deploymentType === "online" ? "在线版" :
+    state.context.deploymentType === "on-premises" ? "本地版" : "未知部署";
+  const transport = String(state.context.transport || "").toUpperCase();
+  const client = state.context.clientType || "Web";
+  ui.toolCompatibility.textContent = `已识别 ${deployment} CRM · ${transport || "HTTP(S)"} · ${client}。窗体检查只读；字段值仍受连接设置中的授权控制。`;
+}
+
 function request(type, payload = {}) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type, ...payload }, (response) => {
@@ -294,15 +464,18 @@ async function refreshContext(showFeedback) {
 
 function renderContext(context, errorMessage) {
   if (!context) {
+    ui.openToolsButton.disabled = true;
     ui.scopeTitle.textContent = "等待识别 CRM 窗体";
     ui.entityValue.textContent = "—";
     ui.formValue.textContent = "—";
     ui.versionValue.textContent = "—";
     ui.apiValue.textContent = ui.apiVersion.value === "auto" ? "自动" : ui.apiVersion.value;
     ui.scopeNote.textContent = errorMessage || "打开一条 Dynamics 365 记录，再开始采集。";
+    renderToolCompatibility();
     return;
   }
 
+  ui.openToolsButton.disabled = false;
   const entity = context.entityName || "未识别实体";
   const form = context.formLabel || shortId(context.formId) || "未识别窗体";
   ui.scopeTitle.textContent = context.formLabel ? context.formLabel : `${entity} 记录窗体`;
@@ -319,6 +492,7 @@ function renderContext(context, errorMessage) {
     : ui.allowCrmDataAccess.checked
       ? "已定位页面；AI 可按需读取当前窗体实时值和只读查询 CRM 数据。"
       : "已定位页面；不会读取页面中的业务数据值。";
+  renderToolCompatibility();
 }
 
 async function collectAndUpload(options = {}) {

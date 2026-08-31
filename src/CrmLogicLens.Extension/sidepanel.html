@@ -20,6 +20,9 @@
           <button class="icon-button" id="refreshContextButton" type="button" aria-label="重新采集当前窗体逻辑" title="重新采集当前窗体逻辑">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/></svg>
           </button>
+          <button class="icon-button tools-button" id="openToolsButton" type="button" aria-label="打开增强工具" title="增强工具" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5 5L4 17l3 3 5.7-5.7a4 4 0 0 0 5-5l-2.4 2.4-3-3 2.4-2.4Z"/></svg>
+          </button>
           <button class="icon-button settings-button" id="openSettingsButton" type="button" aria-label="打开连接设置" title="连接设置">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63 1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>
           </button>
@@ -147,6 +150,50 @@
         </button>
       </form>
     </section>
+
+    <dialog class="settings-dialog tools-dialog" id="toolsDialog" aria-labelledby="toolsTitle">
+      <div class="settings-sheet tools-sheet">
+        <header class="settings-header">
+          <div>
+            <p class="kicker">Level Up 增强能力</p>
+            <h2 id="toolsTitle">窗体与调试工具</h2>
+          </div>
+          <button class="icon-button close-settings-button" id="closeToolsButton" type="button" aria-label="关闭增强工具" title="关闭增强工具">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+          </button>
+        </header>
+
+        <div class="tool-intro" id="toolCompatibility">
+          识别 CRM 后可使用。检查工具只读；诊断入口会重新载入当前页面。
+        </div>
+
+        <section class="tool-section" aria-labelledby="inspectToolsTitle">
+          <div class="tool-section-heading">
+            <h3 id="inspectToolsTitle">窗体检查</h3>
+            <span>结果可作为 AI 证据</span>
+          </div>
+          <div class="tool-grid" id="inspectToolGrid"></div>
+        </section>
+
+        <section class="tool-section" aria-labelledby="diagnosticToolsTitle">
+          <div class="tool-section-heading">
+            <h3 id="diagnosticToolsTitle">微软客户端诊断</h3>
+            <span>会重新载入页面</span>
+          </div>
+          <div class="tool-grid diagnostic-tool-grid" id="diagnosticToolGrid"></div>
+        </section>
+
+        <section class="tool-result-panel" id="toolResultPanel" hidden aria-live="polite">
+          <div class="tool-result-heading">
+            <strong id="toolResultTitle">工具结果</strong>
+            <button class="text-button" id="copyToolResultButton" type="button">复制</button>
+          </div>
+          <pre id="toolResult"></pre>
+        </section>
+
+        <p class="tool-safety-note">AI 只能读取检查结果，不能调用 God Mode、克隆记录、用户模拟或任意 JavaScript。</p>
+      </div>
+    </dialog>
 
     <dialog class="settings-dialog" id="settingsDialog" aria-labelledby="settingsTitle">
       <div class="settings-sheet">

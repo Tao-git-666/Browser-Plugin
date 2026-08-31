@@ -11,4 +11,6 @@ data/
 *.snk
 *.log
 node_modules/
+.playwright-cli/
+output/playwright/
 **/appsettings.Local.json

@@ -59,14 +59,16 @@ function createChromeStub() {
       local: { get: async () => ({}), set: async () => undefined },
       session: { get: async () => ({}), set: async () => undefined }
     },
-    tabs: { query: async () => [] },
+    tabs: { query: async () => [], update: async () => undefined },
     scripting: { executeScript: async () => [] }
   };
 }
 
 async function main() {
   const backgroundPath = path.resolve(__dirname, "../../src/CrmLogicLens.Extension/background.js");
+  const enhancedToolsPath = path.resolve(__dirname, "../../src/CrmLogicLens.Extension/levelup-readonly.js");
   const source = fs.readFileSync(backgroundPath, "utf8");
+  const enhancedToolsSource = fs.readFileSync(enhancedToolsPath, "utf8");
   const context = vm.createContext({
     chrome: createChromeStub(),
     console,
@@ -87,7 +89,134 @@ async function main() {
     setTimeout,
     clearTimeout
   });
+  vm.runInContext(enhancedToolsSource, context, { filename: enhancedToolsPath });
   vm.runInContext(source, context, { filename: backgroundPath });
+
+  assert.equal(vm.runInContext("CRM_LOGIC_LENS_ENHANCED_TOOLS.definitions.length", context), 8);
+  assert.equal(vm.runInContext(
+    "CRM_LOGIC_LENS_ENHANCED_TOOLS.definitions.some(x => x.id === 'form-overview')", context), true);
+  assert.equal(vm.runInContext(
+    "CRM_LOGIC_LENS_ENHANCED_TOOLS.definitions.some(x => /god|clone|imperson/i.test(x.id))", context), false);
+  vm.runInContext(`
+    location = {
+      href: "https://contoso.crm.dynamics.com/main.aspx?appid=demo",
+      origin: "https://contoso.crm.dynamics.com",
+      search: "?appid=demo",
+      hash: ""
+    };
+    const changedAttribute = {
+      getName: () => "new_status",
+      getAttributeType: () => "optionset",
+      getFormat: () => null,
+      getRequiredLevel: () => "required",
+      getSubmitMode: () => "dirty",
+      getIsDirty: () => true,
+      getValue: () => 2,
+      getText: () => "已提交",
+      controls: { get: () => [] }
+    };
+    const optionControl = {
+      getName: () => "new_status",
+      getLabel: () => "状态",
+      getControlType: () => "optionset",
+      getVisible: () => true,
+      getDisabled: () => false,
+      getAttribute: () => changedAttribute,
+      getOptions: () => [{ value: 1, text: "草稿" }, { value: 2, text: "已提交" }]
+    };
+    changedAttribute.controls.get = () => [optionControl];
+    Xrm = {
+      Utility: {
+        getGlobalContext: () => ({
+          getClientUrl: () => "https://contoso.crm.dynamics.com",
+          getVersion: () => "9.2.24081.001",
+          client: { getClient: () => "Web", getClientState: () => "Online" },
+          organizationSettings: { organizationId: "11111111-1111-4111-8111-111111111111" },
+          getCurrentAppProperties: async () => ({ appId: "22222222-2222-4222-8222-222222222222" })
+        }),
+        getPageContext: async () => ({ input: { entityName: "account", entityId: "33333333-3333-4333-8333-333333333333" } })
+      },
+      Page: {
+        data: { entity: {
+          attributes: { get: () => [changedAttribute] },
+          getEntityName: () => "account",
+          getId: () => "{33333333-3333-4333-8333-333333333333}",
+          getIsDirty: () => true
+        } },
+        ui: {
+          controls: { get: () => [optionControl] },
+          tabs: { get: () => [] },
+          getFormType: () => 2,
+          formSelector: { getCurrentItem: () => null }
+        }
+      }
+    };
+  `, context);
+  const overview = vm.runInContext(
+    "CRM_LOGIC_LENS_ENHANCED_TOOLS.runInPage('form-overview', false)", context);
+  assert.equal(overview.ok, true);
+  assert.equal(overview.data.changedFieldCount, 1);
+  const hiddenValues = vm.runInContext(
+    "CRM_LOGIC_LENS_ENHANCED_TOOLS.runInPage('changed-fields', false)", context);
+  assert.equal(hiddenValues.data[0].value, undefined, "business values require consent");
+  const includedValues = vm.runInContext(
+    "CRM_LOGIC_LENS_ENHANCED_TOOLS.runInPage('changed-fields', true)", context);
+  assert.equal(includedValues.data[0].value, 2);
+  const onlineContext = await vm.runInContext("readD365ContextInPage()", context);
+  assert.equal(onlineContext.context.deploymentType, "online");
+  assert.equal(onlineContext.context.transport, "https");
+
+  vm.runInContext(`
+    location.href = "http://crm-internal/Org/main.aspx";
+    location.origin = "http://crm-internal";
+    Xrm.Utility.getGlobalContext = () => ({
+      getClientUrl: () => "http://crm-internal/Org",
+      getVersion: () => "9.1.0007.0006",
+      client: { getClient: () => "Web", getClientState: () => "Online" },
+      organizationSettings: { organizationId: "11111111-1111-4111-8111-111111111111" }
+    });
+  `, context);
+  const onPremContext = await vm.runInContext("readD365ContextInPage()", context);
+  assert.equal(onPremContext.context.deploymentType, "on-premises");
+  assert.equal(onPremContext.context.transport, "http");
+
+  context.__processUrls = [];
+  context.__processLocated = {
+    context: {
+      organizationUrl: "http://crm-internal/Org",
+      entityName: "new_ticket",
+      version: "9.1.0007.0006"
+    }
+  };
+  await vm.runInContext(`
+    chooseApiVersion = async () => "v9.1";
+    crmGetJson = async (_located, url) => {
+      __processUrls.push(url);
+      if (url.includes("/workflows?")) return { value: [{
+        workflowid: "44444444-4444-4444-8444-444444444444",
+        name: "提交前校验",
+        category: 2,
+        statecode: 1,
+        primaryentity: "new_ticket",
+        ismanaged: false
+      }] };
+      if (url.includes("/customapis?")) return { value: [{
+        customapiid: "55555555-5555-4555-8555-555555555555",
+        name: "提交工单",
+        uniquename: "new_SubmitTicket",
+        boundentitylogicalname: "new_ticket",
+        ismanaged: false
+      }] };
+      throw new Error("unexpected process URL");
+    };
+  `, context);
+  const tableProcesses = await vm.runInContext(
+    "readCurrentTableProcesses(__processLocated, { apiVersion: 'auto' })", context);
+  assert.equal(tableProcesses.data.processes.length, 1);
+  assert.equal(tableProcesses.data.processes[0].kind, "业务规则");
+  assert.equal(tableProcesses.data.customApis[0].uniqueName, "new_SubmitTicket");
+  assert.ok(context.__processUrls.every(url => url.includes("new_ticket")));
+  assert.ok(context.__processUrls.every(url => url.includes("ismanaged eq false")));
 
   const xml = "<?xml version=\"1.0\"?><RibbonDefinitions><CommandDefinition Id=\"demo\" /></RibbonDefinitions>";
   const zip = createZipPart("RibbonXml.xml", xml);

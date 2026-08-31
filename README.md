@@ -1,10 +1,11 @@
 # CRM Logic Lens
 
-CRM Logic Lens 是一个面向 Dynamics 365 Customer Engagement（本地部署）的业务逻辑解释器。它由 Edge 侧栏扩展和独立的 Windows 分析服务组成：扩展使用当前用户已经登录的 CRM 会话执行只读采集，服务端解析窗体、JavaScript、Ribbon 和插件注册信息，再把结果转换成带证据引用的中文说明。
+CRM Logic Lens 是一个同时面向 Dynamics 365 Customer Engagement 本地部署和 Dynamics 365 Online 的业务逻辑解释器。它由 Edge 侧栏扩展和独立的 Windows 分析服务组成：扩展使用当前用户已经登录的 CRM 会话执行只读采集，服务端解析窗体、JavaScript、Ribbon 和插件注册信息，再把结果转换成带证据引用的中文说明。
 
 ## 当前实现范围
 
 - 识别当前 UCI/经典窗体上下文。
+- 提供受 Level Up 启发的独立增强工具面板：窗体概览、未保存字段、字段状态、选项集和当前实体自定义流程，以及由用户手动启动的 Forms Monitor、Command Checker、Performance Center。检查结果会加入后续 AI 问答证据；字段值仍受数据读取授权控制。
 - 读取 `SystemForm.formxml`、关联 JavaScript Web Resource 和实体 Ribbon；继续识别按钮脚本打开的未托管 HTML Web Resource、自定义页面目录及其外部/内嵌脚本，建立“按钮 → 页面 → 脚本”证据链。
 - 从当前实体的消息筛选器开始，只读取相关自定义插件步骤、类型和程序集；可预取这些步骤引用的数据库 DLL。
 - 识别 `invokeHiddenApiAsync` 等项目封装调用，只按脚本实际引用的名称追踪 Custom API/旧式 Action、实现插件和 DLL，不扫描全组织 API 目录。
@@ -21,6 +22,8 @@ CRM Logic Lens 是一个面向 Dynamics 365 Customer Engagement（本地部署�
 - 对上传的相关 DLL 先做 PE/CLR 元数据检查；只有 AI 选中当前实体的具体插件步骤并需要源码时，才由独立低权限进程按需反编译为 C#。全过程绝不加载或执行目标程序集。
 
 尚未承诺：CRM 服务器磁盘/GAC DLL 获取、微软内置按钮内部实现、混淆代码完整还原、没有失败响应或日志时对运行时分支的绝对判定。
+
+增强工具不包含 God Mode、记录克隆、用户模拟、任意 JavaScript、禁用表单事件、禁用业务规则或禁用脚本库。第三方来源和许可证见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
 ## 项目结构
 

@@ -6,6 +6,7 @@ const vm = require("node:vm");
 const root = path.resolve(__dirname, "../..");
 const source = fs.readFileSync(path.join(root, "src/CrmLogicLens.Extension/sidepanel.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "src/CrmLogicLens.Extension/sidepanel.html"), "utf8");
+const manifest = JSON.parse(fs.readFileSync(path.join(root, "src/CrmLogicLens.Extension/manifest.json"), "utf8"));
 
 for (const id of ["tracePanel", "warningPanel", "evidencePanel"]) {
   assert.match(html, new RegExp(`<details[^>]+id=["']${id}["']`));
@@ -13,8 +14,15 @@ for (const id of ["tracePanel", "warningPanel", "evidencePanel"]) {
 for (const id of ["faultRecorder", "recordButton", "recordStatus", "recordCount"]) {
   assert.match(html, new RegExp(`id=["']${id}["']`));
 }
+for (const id of ["openToolsButton", "toolsDialog", "inspectToolGrid", "diagnosticToolGrid", "toolResult"]) {
+  assert.match(html, new RegExp(`id=["']${id}["']`));
+}
+assert.ok(manifest.host_permissions.includes("http://*/*"), "on-premises HTTP CRM must remain supported");
+assert.ok(manifest.host_permissions.includes("https://*/*"), "online and HTTPS CRM must remain supported");
+assert.equal(manifest.version, "0.8.0");
 assert.match(source, /START_RUNTIME_RECORDING/);
 assert.match(source, /STOP_RUNTIME_RECORDING/);
+assert.match(source, /RUN_ENHANCED_TOOL/);
 assert.match(source, /ui\.chatForm\.requestSubmit\(\);/);
 assert.match(source, /const context = await refreshContext\(false\);/);
 assert.match(source, /void collectAndUpload\(\{ automatic: true \}\);/);

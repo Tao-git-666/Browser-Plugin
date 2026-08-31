@@ -1,5 +1,20 @@
 # CRM 逻辑透镜 Edge 扩展
 
+当前扩展版本包含受 Level Up for Dynamics 365/Power Apps 启发的安全增强工具：窗体概览、未保存字段、字段状态、选项集，以及微软客户端 Forms Monitor、Command Checker 和 Performance Center 入口。窗体检查结果会暂存在浏览器会话中，并作为后续 AI 问答的运行时证据。
+
+兼容范围：
+
+- Dynamics 365 Online（HTTPS）。
+- Dynamics 365 本地部署（HTTP 或 HTTPS，Web API v8.2 至 v9.2 自动探测）。
+- UCI 主窗体和能够访问 `Xrm` 的嵌套 frame。
+
+安全边界：
+
+- AI 不能调用 God Mode、记录克隆、用户模拟或任意 JavaScript。
+- 检查工具不写入 CRM；字段值只有在用户打开“允许 AI 按需读取 CRM 业务数据和当前窗体值”后才会返回。
+- Forms Monitor、Command Checker 和 Performance Center 只由用户手动启动，启动前会提示页面重新载入和未保存数据风险。
+- 第三方声明见仓库根目录 `THIRD-PARTY-NOTICES.md`。
+
 这是一个无需构建工具的 Edge Manifest V3 侧栏扩展。它在当前 Dynamics 365 页面中使用公开的 `Xrm` 上下文，执行只读 Web API 查询，并把代码和配置快照送到独立的内网分析服务器。
 
 ## 当前能力

@@ -1,5 +1,9 @@
 "use strict";
 
+if (typeof importScripts === "function") {
+  importScripts("levelup-readonly.js");
+}
+
 const DEFAULT_SETTINGS = Object.freeze({
   serverUrl: "http://localhost:5165",
   apiVersion: "auto",
@@ -124,6 +128,10 @@ async function handleMessage(message) {
       return getSession();
     case "GET_CONTEXT":
       return getCurrentContext();
+    case "GET_ENHANCED_TOOLS":
+      return getEnhancedTools();
+    case "RUN_ENHANCED_TOOL":
+      return runEnhancedTool(message.toolId, Boolean(message.confirmed));
     case "START_RUNTIME_RECORDING":
       return startRuntimeRecording();
     case "GET_RUNTIME_RECORDING_STATUS":
@@ -198,6 +206,163 @@ async function getCurrentContext() {
     apiVersion: settings.apiVersion === "auto" ? null : settings.apiVersion
   };
   return { context, warnings: located.warnings };
+}
+
+function getEnhancedTools() {
+  return (globalThis.CRM_LOGIC_LENS_ENHANCED_TOOLS?.definitions || []).map((tool) => ({ ...tool }));
+}
+
+async function runEnhancedTool(toolId, confirmed) {
+  const registry = globalThis.CRM_LOGIC_LENS_ENHANCED_TOOLS;
+  const definition = registry?.definitions?.find((tool) => tool.id === String(toolId || ""));
+  if (!definition) {
+    throw new Error("不支持的增强工具。请重新加载扩展后再试。 ");
+  }
+
+  const tab = await getActiveHttpTab();
+  const located = await locateD365Context(tab.id);
+  if (definition.group === "diagnostics") {
+    if (!confirmed) {
+      throw new Error("该诊断工具会重新载入当前 CRM 页面，需要用户确认。 ");
+    }
+    const target = new URL(tab.url);
+    target.searchParams.set(definition.navigationParameter, "true");
+    await chrome.tabs.update(tab.id, { url: target.href });
+    return {
+      toolId: definition.id,
+      navigated: true,
+      title: `${definition.label} 正在打开`,
+      message: "CRM 页面会重新载入；完成后可重新打开侧边栏。"
+    };
+  }
+
+  const settings = await getSettings();
+  if (definition.crmMetadataQuery) {
+    const result = await readCurrentTableProcesses(located, settings);
+    await rememberEnhancedToolEvidence(result, located.context);
+    return { ...result, context: located.context };
+  }
+  const injected = await chrome.scripting.executeScript({
+    target: { tabId: located.tabId, frameIds: [located.frameId] },
+    world: "MAIN",
+    func: registry.runInPage,
+    args: [definition.id, settings.allowCrmDataAccess]
+  });
+  const result = injected?.[0]?.result;
+  if (!result?.ok) {
+    throw new Error(result?.error || "CRM 页面没有返回工具结果。 ");
+  }
+
+  await rememberEnhancedToolEvidence(result, located.context);
+  return { ...result, context: located.context };
+}
+
+async function readCurrentTableProcesses(located, settings) {
+  const entityName = String(located?.context?.entityName || "").toLowerCase();
+  if (!/^[a-z][a-z0-9_]{0,127}$/.test(entityName)) {
+    throw new Error("当前页面没有可用于查询流程的实体逻辑名。 ");
+  }
+  const warnings = [];
+  const apiVersion = await chooseApiVersion(located, settings, warnings);
+  const root = apiRoot(located.context.organizationUrl, apiVersion);
+  const escapedEntity = entityName.replace(/'/g, "''");
+  const workflowUrls = [
+    `${root}/workflows?$select=workflowid,name,category,mode,statecode,statuscode,primaryentity,ondemand,triggeroncreate,triggerondelete,triggeronupdateattributelist,ismanaged&$filter=primaryentity eq '${escapedEntity}' and statecode eq 1 and ismanaged eq false&$top=250`,
+    `${root}/workflows?$select=workflowid,name,category,mode,statecode,primaryentity,ismanaged&$filter=primaryentity eq '${escapedEntity}' and statecode eq 1 and ismanaged eq false&$top=250`,
+    `${root}/workflows?$select=workflowid,name,category,mode,statecode,primaryentity,ismanaged&$filter=primaryentity eq '${escapedEntity}' and ismanaged eq false&$top=250`
+  ];
+  let workflows = [];
+  try {
+    workflows = await fetchFirstPageCompatible(located, "当前实体流程", workflowUrls, 250, warnings);
+  } catch (error) {
+    warnings.push(`当前实体流程读取失败：${friendlyError(error)}`);
+  }
+
+  const customApiUrls = [
+    `${root}/customapis?$select=customapiid,name,uniquename,bindingtype,boundentitylogicalname,isfunction,enabledforworkflow,ismanaged&$filter=boundentitylogicalname eq '${escapedEntity}' and ismanaged eq false&$top=100`,
+    `${root}/customapis?$select=customapiid,name,uniquename,bindingtype,boundentitylogicalname,isfunction,ismanaged&$filter=boundentitylogicalname eq '${escapedEntity}' and ismanaged eq false&$top=100`
+  ];
+  let customApis = [];
+  try {
+    customApis = await fetchFirstPageCompatible(located, "当前实体绑定自定义 API", customApiUrls, 100, warnings);
+  } catch (error) {
+    // Older on-premises releases do not expose customapi metadata; workflow evidence remains valid.
+    warnings.push(`绑定自定义 API 未读取：${friendlyError(error)}`);
+  }
+
+  const categoryNames = {
+    0: "工作流",
+    1: "对话",
+    2: "业务规则",
+    3: "Action",
+    4: "业务流程",
+    5: "现代流",
+    6: "桌面流"
+  };
+  const asNumber = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+  const processes = workflows.map((item) => ({
+    id: normalizeGuid(item.workflowid),
+    name: String(item.name || "未命名流程").slice(0, 300),
+    kind: categoryNames[Number(item.category)] || `流程类别 ${item.category ?? "未知"}`,
+    category: asNumber(item.category),
+    mode: asNumber(item.mode),
+    stateCode: asNumber(item.statecode),
+    onDemand: item.ondemand == null ? null : Boolean(item.ondemand),
+    triggers: [
+      item.triggeroncreate ? "Create" : null,
+      item.triggerondelete ? "Delete" : null,
+      item.triggeronupdateattributelist ? `Update(${String(item.triggeronupdateattributelist).slice(0, 800)})` : null
+    ].filter(Boolean)
+  }));
+  const apis = customApis.map((item) => ({
+    id: normalizeGuid(item.customapiid),
+    name: String(item.name || item.uniquename || "未命名自定义 API").slice(0, 300),
+    uniqueName: String(item.uniquename || "").slice(0, 200),
+    bindingType: asNumber(item.bindingtype),
+    boundEntityLogicalName: String(item.boundentitylogicalname || entityName).slice(0, 160),
+    isFunction: item.isfunction == null ? null : Boolean(item.isfunction),
+    enabledForWorkflow: item.enabledforworkflow == null ? null : Boolean(item.enabledforworkflow)
+  }));
+  return {
+    ok: true,
+    toolId: "table-processes",
+    title: `${processes.length} 个流程，${apis.length} 个绑定自定义 API`,
+    data: { entityName, processes, customApis: apis, warnings },
+    truncated: workflows.length >= 250 || customApis.length >= 100
+  };
+}
+
+async function rememberEnhancedToolEvidence(result, context) {
+  try {
+    const stored = await chrome.storage.session.get("enhancedToolEvidence");
+    const existing = stored.enhancedToolEvidence;
+    const entries = existing && sameRecordingScope(existing.context, context) && Array.isArray(existing.events)
+      ? existing.events
+      : [];
+    const details = JSON.stringify({
+      title: result.title,
+      valuesIncluded: Boolean(result.valuesIncluded),
+      truncated: Boolean(result.truncated),
+      data: result.data
+    });
+    const event = {
+      kind: "form-inspection",
+      summary: `增强工具“${result.title || result.toolId}”已读取当前窗体状态`.slice(0, 500),
+      details: details.slice(0, 8000),
+      capturedAt: new Date().toISOString()
+    };
+    await chrome.storage.session.set({
+      enhancedToolEvidence: {
+        context,
+        events: [...entries, event].slice(-12)
+      }
+    });
+  } catch {
+    // The inspector result is still returned even when ephemeral evidence cannot be cached.
+  }
 }
 
 async function collectAndUpload() {
@@ -924,6 +1089,42 @@ function startRuntimeRecordingInPage(organizationUrl, preserveExisting = false, 
   };
   record("recording", "开始录制故障复现");
 
+  // Bind Dynamics form events once per frame. Only logical names and state are recorded;
+  // business values remain behind the explicit CRM data access consent setting.
+  const formBindingsKey = "__crmLogicLensFormEventBindingsV1";
+  if (!window[formBindingsKey]) {
+    try {
+      const page = globalThis.Xrm?.Page;
+      const attributes = page?.data?.entity?.attributes?.get?.() || [];
+      for (const attribute of Array.isArray(attributes) ? attributes.slice(0, 500) : []) {
+        if (typeof attribute?.addOnChange !== "function") continue;
+        attribute.addOnChange((executionContext) => {
+          try {
+            const source = executionContext?.getEventSource?.() || attribute;
+            const name = bound(source?.getName?.() || "未知字段", 160);
+            const dirty = Boolean(source?.getIsDirty?.());
+            record("form-field-change", `字段 ${name} 已改变`, dirty ? "当前值尚未保存" : "字段已触发 OnChange");
+          } catch { /* form event tracing must not affect CRM */ }
+        });
+      }
+      const entity = page?.data?.entity;
+      if (typeof entity?.addOnSave === "function") {
+        entity.addOnSave((executionContext) => {
+          try {
+            const mode = executionContext?.getEventArgs?.()?.getSaveMode?.();
+            record("form-save", "窗体开始保存", mode == null ? null : `保存模式：${mode}`);
+          } catch { /* optional event evidence */ }
+        });
+      }
+      if (typeof page?.data?.addOnLoad === "function") {
+        page.data.addOnLoad(() => record("form-data-load", "窗体数据已重新加载"));
+      }
+      window[formBindingsKey] = true;
+    } catch {
+      // Custom pages and older clients may not expose the full Xrm form event API.
+    }
+  }
+
   if (!window[installedKey]) {
     document.addEventListener("click", (event) => {
       const target = event.target instanceof Element
@@ -1148,6 +1349,26 @@ function readD365ContextInPage() {
       warnings.push("CRM 客户端没有返回组织地址，暂以当前页面来源作为组织地址。");
     }
 
+    let deploymentType = "on-premises";
+    let transport = null;
+    let clientType = null;
+    try {
+      const organizationAddress = new URL(String(organizationUrl), location.href);
+      const hostname = organizationAddress.hostname.toLowerCase();
+      transport = organizationAddress.protocol.replace(":", "");
+      const cloudSuffixes = [
+        ".dynamics.com",
+        ".dynamics.cn",
+        ".dynamics.us",
+        ".microsoftdynamics.de",
+        ".appsplatform.us"
+      ];
+      deploymentType = cloudSuffixes.some((suffix) => hostname.endsWith(suffix)) ? "online" : "on-premises";
+    } catch {
+      deploymentType = "unknown";
+    }
+    try { clientType = globalContext?.client?.getClient?.() || null; } catch { /* optional */ }
+
     return {
       found: true,
       warnings,
@@ -1156,6 +1377,9 @@ function readD365ContextInPage() {
         organizationId,
         version: version ? String(version) : null,
         apiVersion: null,
+        deploymentType,
+        transport,
+        clientType: clientType ? String(clientType) : null,
         pageType: String(pageType || "unknown"),
         entityName: entityName ? String(entityName).toLowerCase() : null,
         entityId,
@@ -2665,10 +2889,18 @@ async function askQuestion(snapshotId, question) {
   const session = await getSession();
   const settings = await getSettings();
   const serverUrl = session?.snapshotId === snapshotId && session.serverUrl ? session.serverUrl : settings.serverUrl;
-  const recordingStore = await chrome.storage.session.get("runtimeRecording");
-  const runtimeRecording = recordingMatchesSession(recordingStore.runtimeRecording, session)
+  const recordingStore = await chrome.storage.session.get(["runtimeRecording", "enhancedToolEvidence"]);
+  const recordedEvents = recordingMatchesSession(recordingStore.runtimeRecording, session)
     ? recordingStore.runtimeRecording.events.slice(0, 100)
     : [];
+  const enhancedEvents = recordingStore.enhancedToolEvidence &&
+      sameRecordingScope(recordingStore.enhancedToolEvidence.context, session?.context) &&
+      Array.isArray(recordingStore.enhancedToolEvidence.events)
+    ? recordingStore.enhancedToolEvidence.events.slice(-12)
+    : [];
+  const runtimeRecording = [...recordedEvents, ...enhancedEvents]
+    .sort((left, right) => (Date.parse(left?.capturedAt) || 0) - (Date.parse(right?.capturedAt) || 0))
+    .slice(-100);
   const dataResults = new Map();
   const formValueResults = new Map();
   let continuationId = null;
