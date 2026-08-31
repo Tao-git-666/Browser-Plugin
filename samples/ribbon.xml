@@ -1,0 +1,16 @@
+<RibbonDefinitions>
+  <CommandDefinitions>
+    <CommandDefinition Id="new.account.Command.SubmitForApproval">
+      <EnableRules>
+        <EnableRule Id="new.account.EnableRule.HasRecord" />
+      </EnableRules>
+      <DisplayRules />
+      <Actions>
+        <JavaScriptFunction FunctionName="AccountLogic.submitForApproval" Library="$webresource:new_/account.logic.js">
+          <CrmParameter Value="PrimaryControl" />
+        </JavaScriptFunction>
+      </Actions>
+    </CommandDefinition>
+  </CommandDefinitions>
+</RibbonDefinitions>
+

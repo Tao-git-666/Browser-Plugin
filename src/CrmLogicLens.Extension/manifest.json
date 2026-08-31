@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "CRM 逻辑透镜",
+  "short_name": "逻辑透镜",
+  "version": "0.7.0",
+  "description": "从当前 Dynamics 365 窗体采集只读配置与代码证据，并交给内网分析服务解释业务逻辑。",
+  "minimum_chrome_version": "114",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "sidePanel",
+    "storage",
+    "tabs",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "打开 CRM 逻辑透镜"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "incognito": "not_allowed"
+}

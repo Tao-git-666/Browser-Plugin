@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>CRM 逻辑透镜</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <main>
+    <section class="scope-panel" aria-labelledby="scopeTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">当前观察范围</p>
+          <h2 id="scopeTitle">等待识别 CRM 窗体</h2>
+        </div>
+        <div class="scope-actions">
+          <span class="connection-badge" id="connectionBadge" data-tone="quiet">未检测</span>
+          <button class="icon-button" id="refreshContextButton" type="button" aria-label="重新采集当前窗体逻辑" title="重新采集当前窗体逻辑">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/></svg>
+          </button>
+          <button class="icon-button settings-button" id="openSettingsButton" type="button" aria-label="打开连接设置" title="连接设置">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63 1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+          </button>
+        </div>
+      </div>
+      <dl class="scope-grid" id="scopeGrid">
+        <div><dt>实体</dt><dd id="entityValue">—</dd></div>
+        <div hidden><dt>窗体</dt><dd id="formValue">—</dd></div>
+        <div hidden><dt>版本</dt><dd id="versionValue">—</dd></div>
+        <div hidden><dt>接口</dt><dd id="apiValue">自动</dd></div>
+      </dl>
+      <p class="scope-note" id="scopeNote" hidden>打开一条 Dynamics 365 记录，再开始采集。</p>
+    </section>
+
+    <div class="diagnostic-panels" hidden aria-hidden="true">
+    <details class="collapsible-panel trace-panel" id="tracePanel">
+      <summary class="collapsible-summary">
+        <div>
+          <p class="kicker">证据线路</p>
+          <h2 id="traceTitle">从界面追到后台动作</h2>
+        </div>
+        <span class="artifact-count" id="artifactCount">0 份证据</span>
+      </summary>
+
+      <div class="collapsible-content">
+        <ol class="trace-list" id="traceList">
+          <li class="trace-step" data-step="context" data-state="idle">
+            <span class="trace-node" aria-hidden="true"></span>
+            <div><strong>定位当前窗体</strong><p>识别实体、记录页和应用上下文</p></div>
+            <span class="step-state">待开始</span>
+          </li>
+          <li class="trace-step" data-step="form" data-state="idle">
+            <span class="trace-node" aria-hidden="true"></span>
+            <div><strong>读取窗体事件</strong><p>FormXML、保存与字段事件</p></div>
+            <span class="step-state">待开始</span>
+          </li>
+          <li class="trace-step" data-step="ribbon" data-state="idle">
+            <span class="trace-node" aria-hidden="true"></span>
+            <div><strong>追踪按钮命令</strong><p>命令栏规则与绑定函数</p></div>
+            <span class="step-state">待开始</span>
+          </li>
+          <li class="trace-step" data-step="scripts" data-state="idle">
+            <span class="trace-node" aria-hidden="true"></span>
+            <div><strong>收集相关脚本</strong><p>仅限窗体和按钮引用的 JavaScript</p></div>
+            <span class="step-state">待开始</span>
+          </li>
+          <li class="trace-step" data-step="plugins" data-state="idle">
+            <span class="trace-node" aria-hidden="true"></span>
+            <div><strong>建立插件目录</strong><p>步骤、类型和程序集登记信息</p></div>
+            <span class="step-state">待开始</span>
+          </li>
+          <li class="trace-step" data-step="upload" data-state="idle">
+            <span class="trace-node" aria-hidden="true"></span>
+            <div><strong>交给分析服务</strong><p>上传代码证据，不上传 CRM 登录信息</p></div>
+            <span class="step-state">待开始</span>
+          </li>
+        </ol>
+
+        <button class="primary-button" id="collectButton" type="button">
+          <span>重新采集当前逻辑</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 7 7-7 7"/></svg>
+        </button>
+        <p class="privacy-line"><span aria-hidden="true">◉</span> 打开侧栏后自动采集；全程只读，插件代码仅在 AI 需要时按需反编译。</p>
+      </div>
+    </details>
+
+    <details class="collapsible-panel warning-panel" id="warningPanel" hidden>
+      <summary class="collapsible-summary">
+        <div>
+          <p class="kicker warning-kicker">未取得的证据</p>
+          <h2 id="warningTitle">其余部分仍已继续处理</h2>
+        </div>
+        <span class="warning-count" id="warningCount">0</span>
+      </summary>
+      <div class="collapsible-content">
+        <ul id="warningList"></ul>
+      </div>
+    </details>
+
+    <details class="collapsible-panel evidence-panel" id="evidencePanel" hidden>
+      <summary class="collapsible-summary">
+        <div>
+          <p class="kicker">分析结果</p>
+          <h2 id="evidenceTitle">已生成证据链</h2>
+        </div>
+        <span class="confidence-chip" id="evidenceCount">0 条业务证据</span>
+      </summary>
+      <div class="collapsible-content">
+        <p class="analysis-summary" id="analysisSummary"></p>
+        <ul class="evidence-list" id="evidenceList"></ul>
+      </div>
+    </details>
+    </div>
+
+    <section class="chat-panel" aria-labelledby="chatTitle">
+      <div class="section-heading compact">
+        <div>
+          <p class="kicker">向逻辑提问</p>
+          <h2 id="chatTitle">把代码翻译成业务语言</h2>
+        </div>
+        <span class="ready-dot" id="chatReady" aria-label="尚未准备好"></span>
+      </div>
+
+      <div class="fault-recorder" id="faultRecorder" data-state="idle">
+        <div class="recorder-copy">
+          <span class="recording-pulse" aria-hidden="true"></span>
+          <span id="recordStatus">遇到难复现的报错？录下这一次操作</span>
+          <small id="recordCount">只记录点击、异常、错误提示和失败请求</small>
+        </div>
+        <button class="record-button" id="recordButton" type="button" disabled>
+          <span class="record-button-icon" aria-hidden="true"></span>
+          <span id="recordButtonLabel">录制报错</span>
+        </button>
+      </div>
+
+      <div class="chat-log" id="chatLog" aria-live="polite" aria-label="对话记录">
+        <div class="message system-message">完成分析后，直接问业务问题即可。例如：“提交按钮有什么用？”或“保存时什么情况会被拦截？”</div>
+      </div>
+
+      <form class="composer" id="chatForm">
+        <label class="sr-only" for="questionInput">输入业务逻辑问题</label>
+        <textarea id="questionInput" rows="2" maxlength="2000" placeholder="先完成上方分析…" disabled></textarea>
+        <button id="sendButton" type="submit" aria-label="发送问题" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Zm3 8h13"/></svg>
+        </button>
+      </form>
+    </section>
+
+    <dialog class="settings-dialog" id="settingsDialog" aria-labelledby="settingsTitle">
+      <div class="settings-sheet">
+      <header class="settings-header">
+        <div>
+          <p class="kicker">独立分析服务器</p>
+          <h2 id="settingsTitle">连接设置</h2>
+        </div>
+        <button class="icon-button close-settings-button" id="closeSettingsButton" type="button" aria-label="关闭设置" title="关闭设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <form id="settingsForm" class="settings-form">
+        <label for="serverUrl">分析服务器地址</label>
+        <input id="serverUrl" name="serverUrl" type="url" inputmode="url" autocomplete="url" placeholder="http://localhost:5165" required>
+        <p class="field-help">例如 https://logiclens.contoso.local；不会向它发送 CRM Cookie 或令牌。</p>
+
+        <label for="apiVersion">D365 Web API 版本</label>
+        <select id="apiVersion" name="apiVersion">
+          <option value="auto">自动检测</option>
+          <option value="v9.2">v9.2</option>
+          <option value="v9.1">v9.1</option>
+          <option value="v9.0">v9.0</option>
+          <option value="v8.2">v8.2</option>
+        </select>
+
+        <label class="check-row">
+          <input id="includeApplicationRibbon" name="includeApplicationRibbon" type="checkbox">
+          <span><strong>同步全局命令栏</strong><small>证据量会明显增加；默认只读取当前实体命令栏。</small></span>
+        </label>
+
+        <label class="check-row sensitive-option">
+          <input id="includePluginAssemblies" name="includePluginAssemblies" type="checkbox">
+          <span><strong>允许分析当前实体相关插件代码（推荐）</strong><small>默认开启；只预取当前实体步骤引用的数据库 DLL，AI 需要时才在独立服务器反编译。磁盘部署 DLL 无法读取。</small></span>
+        </label>
+
+        <label class="check-row data-consent-option">
+          <input id="allowCrmDataAccess" name="allowCrmDataAccess" type="checkbox">
+          <span><strong>允许 AI 按需读取 CRM 业务数据和当前窗体值</strong><small>默认关闭。开启即表示同意：AI 可读取当前窗体中必要字段的实时值（包括未保存修改）、通过当前浏览器登录身份执行只读 Web API 查询，并读取有限失败响应用于诊断。结果会发送到独立分析服务器和已配置的 AI 模型服务。CRM 权限仍然生效；不采集 Cookie、令牌或请求体，不重放 POST，不允许新增、修改或删除。</small></span>
+        </label>
+
+        <div class="settings-actions">
+          <button class="secondary-button" id="testServerButton" type="button">测试连接</button>
+          <button class="primary-small" type="submit">保存设置</button>
+        </div>
+      </form>
+      </div>
+    </dialog>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

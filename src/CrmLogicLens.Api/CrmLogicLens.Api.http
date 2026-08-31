@@ -1,0 +1,65 @@
+@baseUrl = http://localhost:5165
+@snapshotId = 00000000-0000-0000-0000-000000000000
+@jobId = 00000000-0000-0000-0000-000000000000
+
+### Server limits and supported artifact types
+GET {{baseUrl}}/api/v1/capabilities
+Accept: application/json
+
+### Create a minimal analysis snapshot
+POST {{baseUrl}}/api/v1/snapshots
+Content-Type: application/json
+Accept: application/json
+
+{
+  "context": {
+    "organizationUrl": "https://crm.contoso.local/Contoso",
+    "organizationId": null,
+    "version": "9.1",
+    "apiVersion": "v9.1",
+    "pageType": "entityrecord",
+    "entityName": "account",
+    "entityId": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+    "formId": "21b0f5f1-7c73-4cb5-9eb6-26f92dfac55a",
+    "appId": null,
+    "formLabel": "Account"
+  },
+  "artifacts": [
+    {
+      "kind": "formXml",
+      "name": "account-main-form.xml",
+      "componentId": "21b0f5f1-7c73-4cb5-9eb6-26f92dfac55a",
+      "version": "1",
+      "mediaType": "application/xml; charset=utf-8",
+      "contentBase64": "PGZvcm0+PC9mb3JtPg==",
+      "sourceUrl": "https://crm.contoso.local/Contoso/api/data/v9.1/systemforms"
+    }
+  ],
+  "capturedAt": "2026-08-23T14:00:00Z"
+}
+
+### Snapshot metadata (does not return raw source or DLL bytes)
+GET {{baseUrl}}/api/v1/snapshots/{{snapshotId}}
+Accept: application/json
+
+### Background analysis job
+GET {{baseUrl}}/api/v1/jobs/{{jobId}}
+Accept: application/json
+
+### Evidence graph and summary
+GET {{baseUrl}}/api/v1/snapshots/{{snapshotId}}/evidence
+Accept: application/json
+
+### Ask a question grounded in completed evidence
+POST {{baseUrl}}/api/v1/chat
+Content-Type: application/json
+Accept: application/json
+
+{
+  "snapshotId": "{{snapshotId}}",
+  "question": "保存这个窗体时会执行哪些逻辑？",
+  "focusComponentId": null
+}
+
+### Health/readiness check
+GET {{baseUrl}}/health

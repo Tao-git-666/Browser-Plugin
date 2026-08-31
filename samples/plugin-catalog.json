@@ -1,0 +1,46 @@
+{
+  "steps": [
+    {
+      "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "name": "Account approval validation",
+      "messageId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "filterId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "eventHandlerId": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "stage": 20,
+      "mode": 0,
+      "rank": 10,
+      "filteringAttributes": "new_submitted,creditlimit",
+      "stateCode": 0
+    }
+  ],
+  "messages": [
+    { "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "name": "Update" }
+  ],
+  "filters": [
+    {
+      "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "primaryObjectTypeCode": "account",
+      "secondaryObjectTypeCode": null
+    }
+  ],
+  "types": [
+    {
+      "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "typeName": "Contoso.Crm.AccountApprovalPlugin",
+      "name": "AccountApprovalPlugin",
+      "assemblyId": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    }
+  ],
+  "assemblies": [
+    {
+      "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      "name": "Contoso.Crm.Plugins",
+      "version": "1.4.0.0",
+      "sourceType": 0,
+      "isolationMode": 2,
+      "path": null,
+      "sourceHash": "demo"
+    }
+  ]
+}
+

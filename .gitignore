@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+.vscode/
+artifacts/
+data/
+*.user
+*.suo
+*.pfx
+*.snk
+*.log
+node_modules/
+**/appsettings.Local.json
