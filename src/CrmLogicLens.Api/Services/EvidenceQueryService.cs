@@ -227,7 +227,8 @@ public sealed class EvidenceQueryService(
         var allowedKinds = new HashSet<string>(StringComparer.Ordinal)
         {
             "recording", "user-action", "javascript-error", "promise-rejection",
-            "console-error", "ui-error", "http-error", "dataverse-query"
+            "console-error", "ui-error", "http-error", "dataverse-query",
+            "form-inspection", "form-field-change", "form-save", "form-data-load"
         };
         var totalCharacters = 0;
         foreach (var item in events)

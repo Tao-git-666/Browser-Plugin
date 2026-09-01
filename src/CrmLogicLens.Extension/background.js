@@ -2898,9 +2898,7 @@ async function askQuestion(snapshotId, question) {
       Array.isArray(recordingStore.enhancedToolEvidence.events)
     ? recordingStore.enhancedToolEvidence.events.slice(-12)
     : [];
-  const runtimeRecording = [...recordedEvents, ...enhancedEvents]
-    .sort((left, right) => (Date.parse(left?.capturedAt) || 0) - (Date.parse(right?.capturedAt) || 0))
-    .slice(-100);
+  const runtimeRecording = normalizeRuntimeEventsForChat([...recordedEvents, ...enhancedEvents]);
   const dataResults = new Map();
   const formValueResults = new Map();
   let continuationId = null;
@@ -2951,6 +2949,32 @@ async function askQuestion(snapshotId, question) {
     }
   }
   throw new Error("AI 在一次问答中请求了过多批次的 CRM 数据，请缩小问题范围后重试。");
+}
+
+function normalizeRuntimeEventsForChat(events) {
+  const allowedKinds = new Set([
+    "recording", "user-action", "javascript-error", "promise-rejection",
+    "console-error", "ui-error", "http-error", "dataverse-query",
+    "form-inspection", "form-field-change", "form-save", "form-data-load"
+  ]);
+  const now = new Date().toISOString();
+  return (Array.isArray(events) ? events : [])
+    .sort((left, right) => (Date.parse(left?.capturedAt) || 0) - (Date.parse(right?.capturedAt) || 0))
+    .slice(-100)
+    .map((item, index) => {
+      const parsedCapturedAt = Date.parse(item?.capturedAt);
+      const numericStatus = item?.status == null ? null : Number(item.status);
+      return {
+        sequence: index + 1,
+        kind: allowedKinds.has(String(item?.kind || "")) ? String(item.kind) : "recording",
+        summary: String(item?.summary || "运行时事件").replace(/\0/g, "").slice(0, 500) || "运行时事件",
+        details: item?.details == null ? null : String(item.details).replace(/\0/g, "").slice(0, 8000),
+        capturedAt: Number.isFinite(parsedCapturedAt) ? new Date(parsedCapturedAt).toISOString() : now,
+        method: item?.method == null ? null : String(item.method).slice(0, 12),
+        path: item?.path == null ? null : String(item.path).replace(/\0/g, "").slice(0, 1000),
+        status: Number.isInteger(numericStatus) && numericStatus >= 0 && numericStatus <= 599 ? numericStatus : null
+      };
+    });
 }
 
 function recordingMatchesSession(recording, session) {

@@ -97,6 +97,28 @@ async function main() {
     "CRM_LOGIC_LENS_ENHANCED_TOOLS.definitions.some(x => x.id === 'form-overview')", context), true);
   assert.equal(vm.runInContext(
     "CRM_LOGIC_LENS_ENHANCED_TOOLS.definitions.some(x => /god|clone|imperson/i.test(x.id))", context), false);
+  context.__runtimeEvents = [
+    {
+      kind: "form-inspection",
+      summary: "字段状态检查",
+      details: "x".repeat(9001),
+      capturedAt: "2026-08-31T00:00:00Z"
+    },
+    {
+      kind: "future-event-kind",
+      summary: "未知扩展事件",
+      capturedAt: "invalid-date"
+    }
+  ];
+  const normalizedRuntimeEvents = vm.runInContext(
+    "normalizeRuntimeEventsForChat(__runtimeEvents)", context);
+  assert.deepEqual(Array.from(normalizedRuntimeEvents, item => item.sequence), [1, 2]);
+  const formInspectionEvent = normalizedRuntimeEvents.find(item => item.summary === "字段状态检查");
+  const unknownEvent = normalizedRuntimeEvents.find(item => item.summary === "未知扩展事件");
+  assert.equal(formInspectionEvent.kind, "form-inspection");
+  assert.equal(formInspectionEvent.details.length, 8000);
+  assert.equal(unknownEvent.kind, "recording");
+  assert.match(unknownEvent.capturedAt, /^\d{4}-\d{2}-\d{2}T/);
   vm.runInContext(`
     location = {
       href: "https://contoso.crm.dynamics.com/main.aspx?appid=demo",
