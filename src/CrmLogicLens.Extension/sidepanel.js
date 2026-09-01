@@ -1241,6 +1241,9 @@ function shouldAutoCollect(context) {
   if (!context || state.collecting) {
     return false;
   }
+  if (!context.entityName && !context.formId) {
+    return false;
+  }
   if (!state.run || !sameLogicScope(state.run.context, context)) {
     return true;
   }

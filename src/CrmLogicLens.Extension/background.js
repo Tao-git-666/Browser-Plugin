@@ -470,6 +470,17 @@ async function collectAndUpload() {
     capturedAt: new Date().toISOString()
   };
 
+  if (snapshot.artifacts.length === 0) {
+    const fallbackArtifact = createFallbackContextArtifact(context);
+    if (!fallbackArtifact) {
+      const warningSummary = uniqueStrings(warnings).slice(-4).join("；");
+      throw new Error(
+        `当前页面没有可分析的实体窗体或自定义逻辑证据，请打开一条 CRM 记录后重试${warningSummary ? `。采集提示：${warningSummary}` : "。"}`);
+    }
+    snapshot.artifacts.push(fallbackArtifact);
+    warnings.push("当前实体没有取得 FormXML、脚本、命令栏或自定义插件证据；已仅保存最小实体上下文，AI 回答会明确标注这一证据边界。");
+  }
+
   artifacts.splice(0, artifacts.length, ...snapshot.artifacts);
 
   notifyProgress("upload", "active", "正在上传", artifacts.length, warnings);
@@ -493,6 +504,30 @@ async function collectAndUpload() {
     receipt,
     artifactCount: artifacts.length,
     warnings: uniqueStrings(warnings)
+  };
+}
+
+function createFallbackContextArtifact(context) {
+  const entityName = String(context?.entityName || "").trim().toLowerCase();
+  if (!/^[a-z][a-z0-9_]{0,127}$/.test(entityName)) return null;
+  const content = {
+    LogicalName: entityName,
+    DisplayName: {
+      UserLocalizedLabel: {
+        Label: entityName
+      }
+    },
+    Attributes: [],
+    CollectionBoundary: "No FormXML, custom JavaScript, custom Ribbon, entity metadata, or custom plug-in artifact was available in this collection."
+  };
+  return {
+    kind: ARTIFACT_KIND.entityMetadata,
+    name: `${entityName}.context-only.metadata.json`,
+    componentId: null,
+    version: context?.version == null ? null : String(context.version),
+    mediaType: "application/json; charset=utf-8",
+    contentBase64: utf8ToBase64(JSON.stringify(content)),
+    sourceUrl: null
   };
 }
 

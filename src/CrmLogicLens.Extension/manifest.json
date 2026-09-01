@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "CRM 逻辑透镜",
   "short_name": "逻辑透镜",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "面向本地版和在线版 Dynamics 365 的 AI 逻辑诊断与只读增强工具。",
   "minimum_chrome_version": "114",
   "permissions": [

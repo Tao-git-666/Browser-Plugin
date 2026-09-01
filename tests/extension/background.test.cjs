@@ -97,6 +97,18 @@ async function main() {
     "CRM_LOGIC_LENS_ENHANCED_TOOLS.definitions.some(x => x.id === 'form-overview')", context), true);
   assert.equal(vm.runInContext(
     "CRM_LOGIC_LENS_ENHANCED_TOOLS.definitions.some(x => /god|clone|imperson/i.test(x.id))", context), false);
+  context.__fallbackContext = {
+    entityName: "new_ticket",
+    version: "9.1.0007.0006"
+  };
+  const fallbackArtifact = vm.runInContext("createFallbackContextArtifact(__fallbackContext)", context);
+  assert.equal(fallbackArtifact.kind, "entityMetadata");
+  assert.equal(fallbackArtifact.name, "new_ticket.context-only.metadata.json");
+  const fallbackJson = JSON.parse(Buffer.from(fallbackArtifact.contentBase64, "base64").toString("utf8"));
+  assert.equal(fallbackJson.LogicalName, "new_ticket");
+  assert.deepEqual(fallbackJson.Attributes, []);
+  context.__invalidFallbackContext = { entityName: null };
+  assert.equal(vm.runInContext("createFallbackContextArtifact(__invalidFallbackContext)", context), null);
   context.__runtimeEvents = [
     {
       kind: "form-inspection",

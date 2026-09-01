@@ -19,7 +19,7 @@ for (const id of ["openToolsButton", "toolsDialog", "inspectToolGrid", "diagnost
 }
 assert.ok(manifest.host_permissions.includes("http://*/*"), "on-premises HTTP CRM must remain supported");
 assert.ok(manifest.host_permissions.includes("https://*/*"), "online and HTTPS CRM must remain supported");
-assert.equal(manifest.version, "0.8.0");
+assert.equal(manifest.version, "0.8.1");
 assert.match(source, /START_RUNTIME_RECORDING/);
 assert.match(source, /STOP_RUNTIME_RECORDING/);
 assert.match(source, /RUN_ENHANCED_TOOL/);
@@ -49,6 +49,11 @@ const current = {
   formId: "form-1"
 };
 assert.equal(context.shouldAutoCollect(current), true, "first open should collect");
+assert.equal(
+  context.shouldAutoCollect({ organizationUrl: current.organizationUrl, entityName: null, formId: null }),
+  false,
+  "organization home and non-entity pages should not auto-collect"
+);
 
 context.state.run = {
   snapshotId: "snapshot-1",
