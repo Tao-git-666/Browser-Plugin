@@ -192,6 +192,11 @@
           <button class="secondary-button" id="testServerButton" type="button">测试连接</button>
           <button class="primary-small" type="submit">保存设置</button>
         </div>
+        <div class="field-help">
+          <button class="secondary-button" id="syncCodeLibraryButton" type="button">同步当前环境插件代码库</button>
+          <p>点击后按当前登录权限读取本环境自定义 DLL 与注册步骤，在分析服务器保存反编译代码，供 AI 反向排查。首次同步可能较久；更新插件后请再次同步。保持当前 CRM 页面和侧栏打开。</p>
+          <p id="codeLibraryStatus" role="status" aria-live="polite"></p>
+        </div>
       </form>
       </div>
     </dialog>

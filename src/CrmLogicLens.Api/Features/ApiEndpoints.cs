@@ -1,9 +1,12 @@
 using System.Text.Json;
+using System.Threading.Channels;
 using CrmLogicLens.Api.Configuration;
+using CrmLogicLens.Api.Errors;
 using CrmLogicLens.Api.Services;
 using CrmLogicLens.Api.Storage;
 using CrmLogicLens.Api.Validation;
 using CrmLogicLens.Core;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
 
 namespace CrmLogicLens.Api.Features;
@@ -32,10 +35,50 @@ public static class ApiEndpoints
             .WithName("GetEvidence");
         group.MapPost("/chat", ChatAsync)
             .WithName("AskEvidenceQuestion");
+        group.MapPost("/chat/stream", ChatStreamAsync)
+            .WithName("StreamEvidenceQuestion");
         group.MapGet("/capabilities", GetCapabilities)
             .WithName("GetCapabilities");
+        group.MapPost("/code-library/batches/stream", ImportCodeLibraryAsync);
 
         return endpoints;
+    }
+
+    private static async Task ImportCodeLibraryAsync(CodeLibraryBatch batch, EnvironmentCodeLibrary library,
+        HttpContext context, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+    {
+        context.Response.ContentType = "application/x-ndjson; charset=utf-8";
+        context.Response.Headers.CacheControl = "no-cache, no-transform";
+        context.Response.Headers.Append("X-Accel-Buffering", "no");
+        context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var work = library.ImportAsync(batch, linked.Token);
+        async Task Emit(object value)
+        {
+            await context.Response.WriteAsync(JsonSerializer.Serialize(value, new JsonSerializerOptions(JsonSerializerDefaults.Web)) + "\n", cancellationToken);
+            await context.Response.Body.FlushAsync(cancellationToken);
+        }
+        try
+        {
+            while (!work.IsCompleted)
+            {
+                await Emit(new { type = "progress", step = new { title = "建立环境代码索引", summary = "正在反编译或复用已缓存的 DLL，并关联注册步骤。" } });
+                await Task.WhenAny(work, Task.Delay(5000, cancellationToken));
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            await Emit(new { type = "result", response = await work });
+        }
+        catch (ApiInputException exception) { await Emit(new { type = "error", error = exception.Message }); }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            loggerFactory.CreateLogger("CrmLogicLens.CodeLibrary").LogWarning(exception, "Code library batch import failed.");
+            await Emit(new { type = "error", error = "该程序集同步失败，已同步部分仍可使用，请重试。" });
+        }
+        finally
+        {
+            linked.Cancel();
+            try { await work; } catch { /* already reported or client disconnected */ }
+        }
     }
 
     private static async Task<IResult> CreateSnapshotAsync(
@@ -104,6 +147,79 @@ public static class ApiEndpoints
         CancellationToken cancellationToken) =>
         Results.Ok(await query.AnswerAsync(request, cancellationToken));
 
+    private static async Task ChatStreamAsync(
+        ChatRequest? request,
+        EvidenceQueryService query,
+        HttpContext context,
+        IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions> jsonOptions,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        context.Response.ContentType = "application/x-ndjson; charset=utf-8";
+        context.Response.Headers.CacheControl = "no-cache, no-transform";
+        context.Response.Headers.Append("X-Accel-Buffering", "no");
+        context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+
+        var events = Channel.CreateUnbounded<ChatStreamEvent>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = true,
+            AllowSynchronousContinuations = false
+        });
+        var logger = loggerFactory.CreateLogger("CrmLogicLens.ChatStream");
+
+        async Task ProduceAsync()
+        {
+            try
+            {
+                events.Writer.TryWrite(new ChatStreamEvent(
+                    "progress",
+                    new AnalysisTraceStep(0, "开始分析", "正在理解问题并准备当前窗体证据。", null, "active")));
+                var response = await query.AnswerAsync(
+                    request,
+                    cancellationToken,
+                    step => events.Writer.TryWrite(new ChatStreamEvent("progress", step)));
+                events.Writer.TryWrite(new ChatStreamEvent("result", Response: response));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // The browser closed the request; no terminal event can be delivered.
+            }
+            catch (ApiInputException exception)
+            {
+                events.Writer.TryWrite(new ChatStreamEvent(
+                    "error",
+                    Error: exception.Message,
+                    StatusCode: exception.StatusCode));
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(
+                    exception,
+                    "Streaming chat failed with trace identifier {TraceIdentifier}.",
+                    context.TraceIdentifier);
+                events.Writer.TryWrite(new ChatStreamEvent(
+                    "error",
+                    Error: $"分析请求未完成，请查看服务器日志。跟踪编号：{context.TraceIdentifier}",
+                    StatusCode: StatusCodes.Status500InternalServerError));
+            }
+            finally
+            {
+                events.Writer.TryComplete();
+            }
+        }
+
+        var producer = ProduceAsync();
+        await foreach (var item in events.Reader.ReadAllAsync(cancellationToken))
+        {
+            var json = JsonSerializer.Serialize(item, jsonOptions.Value.SerializerOptions);
+            await context.Response.WriteAsync(json + "\n", cancellationToken);
+            await context.Response.Body.FlushAsync(cancellationToken);
+        }
+        await producer;
+    }
+
     private static IResult GetCapabilities(
         IOptions<StorageOptions> storageOptions,
         IOptions<AnalysisQueueOptions> queueOptions,
@@ -123,6 +239,12 @@ public static class ApiEndpoints
         return Results.Ok(new
         {
             apiVersion = "v1",
+            streamingChat = new
+            {
+                enabled = true,
+                protocol = "ndjson",
+                path = "/api/v1/chat/stream"
+            },
             artifactKinds = validator.SupportedMediaTypes.Keys
                 .Select(kind => JsonNamingPolicy.CamelCase.ConvertName(kind.ToString()))
                 .ToArray(),
@@ -172,8 +294,19 @@ public static class ApiEndpoints
                 maxCompletionTokens = ai.MaxCompletionTokens,
                 maxInvestigationCompletionTokens = ai.MaxInvestigationCompletionTokens,
                 maxEvidenceCharacters = ai.MaxEvidenceCharacters,
+                maxInvestigationSeconds = ai.MaxInvestigationSeconds,
+                finalAnswerReserveSeconds = Math.Min(ai.FinalAnswerReserveSeconds, ai.MaxInvestigationSeconds / 2),
                 evidenceGrounded = true,
-                deterministicFallback = true
+                deterministicFallback = false
+            },
+            environmentCodeLibrary = new
+            {
+                enabled = true,
+                requiresExplicitSync = true,
+                maxAssemblies = 300,
+                assembliesPerBatch = 1,
+                cacheKey = "organization-and-dll-sha256",
+                registrationData = "sync-time-snapshot"
             },
             diagnosticSkills = new
             {
@@ -202,4 +335,11 @@ public static class ApiEndpoints
             statusCode: StatusCodes.Status404NotFound,
             title: title,
             detail: detail);
+
+    private sealed record ChatStreamEvent(
+        string Type,
+        AnalysisTraceStep? Step = null,
+        ChatResponse? Response = null,
+        string? Error = null,
+        int? StatusCode = null);
 }

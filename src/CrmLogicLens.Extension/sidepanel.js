@@ -52,6 +52,9 @@ const state = {
   recordingStartedAt: null,
   recordingEventCount: 0,
   recordingTimer: 0,
+  activeChatRequestId: null,
+  chatProgress: null,
+  chatProgressTimer: 0,
   pollToken: 0,
   toastTimer: 0
 };
@@ -92,6 +95,7 @@ function bindEvents() {
   });
   ui.settingsForm.addEventListener("submit", saveSettings);
   ui.testServerButton.addEventListener("click", testServer);
+  document.querySelector("#syncCodeLibraryButton")?.addEventListener("click", syncCodeLibrary);
   ui.chatForm.addEventListener("submit", askQuestion);
   ui.recordButton.addEventListener("click", toggleRuntimeRecording);
   ui.allowCrmDataAccess.addEventListener("change", () => renderContext(state.context));
@@ -101,6 +105,30 @@ function bindEvents() {
       ui.chatForm.requestSubmit();
     }
   });
+}
+
+async function syncCodeLibrary() {
+  const button = document.querySelector("#syncCodeLibraryButton");
+  const status = document.querySelector("#codeLibraryStatus");
+  if (button.disabled) return;
+  button.disabled = true;
+  status.textContent = "正在读取当前环境自定义程序集目录…";
+  let completed = 0;
+  const failures = [];
+  try {
+    const plan = await request("PREPARE_CODE_LIBRARY");
+    failures.push(...(plan.warnings || []));
+    for (let index = 0; index < plan.count; index++) {
+      status.textContent = `正在同步 ${index + 1}/${plan.count}，已完成 ${completed} 个。正在读取注册步骤、反编译或复用缓存…`;
+      try {
+        const result = await request("SYNC_CODE_LIBRARY_BATCH", { index });
+        completed++;
+        failures.push(...(result.warnings || []));
+      } catch (error) { failures.push(error.message); }
+    }
+    status.textContent = `已同步 ${completed}/${plan.count} 个程序集。${failures.length ? "覆盖不完整：" + failures.slice(0, 4).join("；") : "现在可提问某实体由什么插件创建、更新或为什么未触发。"}`;
+  } catch (error) { status.textContent = `同步未完成：${error.message}`; }
+  finally { button.disabled = false; }
 }
 
 async function restoreRecordingStatus() {
@@ -240,6 +268,13 @@ function request(type, payload = {}) {
 }
 
 function handleRuntimeEvent(message) {
+  if (message?.type === "CHAT_PROGRESS") {
+    if (message.requestId === state.activeChatRequestId && message.event?.step) {
+      updateLiveInvestigation(message.event.step);
+    }
+    return;
+  }
+
   if (message?.type !== "COLLECTION_PROGRESS") {
     return;
   }
@@ -574,14 +609,19 @@ async function askQuestion(event) {
   ui.questionInput.disabled = true;
   ui.sendButton.disabled = true;
   appendMessage("user", question);
-  const thinking = appendMessage("assistant", "正在沿证据链查找…", null, null, { compact: true });
+  const requestId = typeof globalThis.crypto?.randomUUID === "function"
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  state.activeChatRequestId = requestId;
+  const progress = createLiveInvestigation(requestId);
 
   try {
     const response = await request("ASK_QUESTION", {
       snapshotId: state.run.snapshotId,
-      question
+      question,
+      requestId
     });
-    thinking.remove();
+    closeLiveInvestigation(true);
     appendMessage(
       "assistant",
       response.answer || "分析服务没有返回文字说明。",
@@ -589,14 +629,137 @@ async function askQuestion(event) {
       response.trace
     );
   } catch (error) {
-    thinking.classList.add("assistant-error");
-    thinking.textContent = `这次提问未完成：${error.message}`;
+    failLiveInvestigation(progress, error.message);
   } finally {
+    state.activeChatRequestId = null;
     state.chatting = false;
     ui.questionInput.disabled = false;
     ui.sendButton.disabled = false;
     ui.questionInput.focus();
   }
+}
+
+function createLiveInvestigation(requestId) {
+  closeLiveInvestigation(true);
+  const card = document.createElement("section");
+  card.className = "message assistant-message live-investigation";
+  card.dataset.requestId = requestId;
+  card.setAttribute("role", "status");
+  card.setAttribute("aria-live", "polite");
+
+  const pulse = document.createElement("span");
+  pulse.className = "investigation-pulse";
+  pulse.setAttribute("aria-hidden", "true");
+  const copy = document.createElement("div");
+  copy.className = "investigation-copy";
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "investigation-eyebrow";
+  eyebrow.textContent = "AI 正在调查";
+  const title = document.createElement("strong");
+  title.className = "investigation-title";
+  title.textContent = "正在准备当前窗体证据";
+  const summary = document.createElement("span");
+  summary.className = "investigation-summary";
+  summary.textContent = "正在建立本次问题的只读调查上下文。";
+  const recent = document.createElement("ul");
+  recent.className = "investigation-recent";
+  const elapsed = document.createElement("time");
+  elapsed.className = "investigation-elapsed";
+  elapsed.textContent = "00:00";
+  copy.append(eyebrow, title, summary, recent);
+  card.append(pulse, copy, elapsed);
+  ui.chatLog.append(card);
+  ui.chatLog.scrollTop = ui.chatLog.scrollHeight;
+
+  state.chatProgress = {
+    requestId,
+    card,
+    title,
+    summary,
+    recent,
+    completed: [],
+    startedAt: Date.now()
+  };
+  state.chatProgressTimer = window.setInterval(updateInvestigationElapsed, 1000);
+  return card;
+}
+
+function updateLiveInvestigation(step) {
+  const progress = state.chatProgress;
+  if (!progress || !step) return;
+  const status = String(step.status || "active").toLowerCase();
+  const label = liveInvestigationLabel(step.toolName, step.title, status);
+  progress.title.textContent = label;
+  progress.summary.textContent = step.summary || "正在继续检查与问题相关的证据。";
+  progress.card.dataset.state = status;
+
+  if (status !== "active") {
+    const completedLabel = status === "failed"
+      ? `未能完成：${step.title || label}`
+      : `已完成：${step.title || label}`;
+    progress.completed = [completedLabel, ...progress.completed.filter(item => item !== completedLabel)].slice(0, 3);
+    progress.recent.replaceChildren(...progress.completed.map(item => {
+      const row = document.createElement("li");
+      row.textContent = item;
+      return row;
+    }));
+  }
+  ui.chatLog.scrollTop = ui.chatLog.scrollHeight;
+}
+
+function liveInvestigationLabel(toolName, fallback, status) {
+  const activeLabels = {
+    search_diagnostic_skills: "正在匹配排查方案",
+    read_diagnostic_skill: "正在读取排查方案",
+    check_diagnostic_progress: "正在核对排查进度",
+    find_business_logic: "正在定位相关逻辑",
+    trace_evidence: "正在追踪调用关系",
+    list_current_entity_plugin_steps: "正在检查插件步骤",
+    read_javascript_function: "正在读取脚本",
+    resolve_custom_api: "正在解析自定义 API",
+    read_custom_api_implementation: "正在反编译自定义 API 插件",
+    read_decompiled_plugin: "正在反编译插件",
+    read_runtime_errors: "正在读取实际报错",
+    read_recorded_runtime_events: "正在还原操作时间线",
+    read_recorded_dataverse_queries: "正在解析页面数据查询",
+    read_current_form_values: "正在读取未保存的窗体值",
+    query_crm_data: "正在只读查询 CRM 数据"
+  };
+  if (status === "active" && activeLabels[toolName]) return activeLabels[toolName];
+  if (status === "requested") return "等待浏览器读取授权数据";
+  if (status === "failed") return `检查未完成：${fallback || "当前步骤"}`;
+  if (status === "completed") return `已完成：${fallback || "当前步骤"}`;
+  return fallback || "正在分析下一步";
+}
+
+function updateInvestigationElapsed() {
+  const progress = state.chatProgress;
+  if (!progress) return;
+  const elapsed = Math.max(0, Math.floor((Date.now() - progress.startedAt) / 1000));
+  const time = progress.card.querySelector(".investigation-elapsed");
+  if (time) {
+    time.textContent = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
+  }
+}
+
+function closeLiveInvestigation(remove) {
+  if (state.chatProgressTimer) window.clearInterval(state.chatProgressTimer);
+  state.chatProgressTimer = 0;
+  if (remove) state.chatProgress?.card?.remove();
+  state.chatProgress = null;
+}
+
+function failLiveInvestigation(card, message) {
+  if (state.chatProgressTimer) window.clearInterval(state.chatProgressTimer);
+  state.chatProgressTimer = 0;
+  state.chatProgress = null;
+  card.classList.add("assistant-error", "live-investigation-failed");
+  card.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = "这次提问未完成";
+  const detail = document.createElement("span");
+  detail.textContent = message;
+  card.append(title, detail);
 }
 
 function appendMessage(role, text, citations, trace, options = {}) {

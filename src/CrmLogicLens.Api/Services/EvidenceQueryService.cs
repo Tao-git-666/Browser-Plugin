@@ -10,9 +10,13 @@ public sealed class EvidenceQueryService(
     OpenAiCompatibleChatClient aiClient,
     DecompiledArtifactService decompiledArtifacts,
     DiagnosticSkillCatalog diagnosticSkills,
-    ILogger<EvidenceQueryService> logger)
+    ILogger<EvidenceQueryService> logger,
+    EnvironmentCodeLibrary? codeLibrary = null)
 {
-    public async Task<ChatResponse> AnswerAsync(ChatRequest? request, CancellationToken cancellationToken)
+    public async Task<ChatResponse> AnswerAsync(
+        ChatRequest? request,
+        CancellationToken cancellationToken,
+        Action<AnalysisTraceStep>? progressObserver = null)
     {
         if (request is null)
         {
@@ -97,24 +101,40 @@ public sealed class EvidenceQueryService(
             runtimeDiagnostics: request.RuntimeDiagnostics,
             diagnosticSkills: diagnosticSkills,
             formValueResults: request.FormValueResults,
-            runtimeRecording: request.RuntimeRecording);
+            runtimeRecording: request.RuntimeRecording,
+            progressObserver: progressObserver,
+            codeLibrary: codeLibrary,
+            environmentLibraryId: request.EnvironmentLibraryId);
         try
         {
             return await aiClient.ExplainAsync(
                 normalizedRequest,
                 toolSession,
-                cancellationToken);
+                cancellationToken,
+                progressObserver);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (Exception exception) when (exception is AiProviderException or HttpRequestException or TaskCanceledException)
+        catch (Exception exception) when (exception is AiProviderException or HttpRequestException or OperationCanceledException)
         {
-            logger.LogWarning(exception, "AI provider answer generation failed; returning deterministic evidence answer.");
-            var fallback = toolSession.CreateBusinessFallback(
-                evidenceAnswer,
-                "AI 服务本次未能完成回答，已只保留当前实体的本地证据结论。");
+            logger.LogWarning(exception, "AI answer generation failed for snapshot {SnapshotId}.", request.SnapshotId);
+            var reason = exception switch
+            {
+                OperationCanceledException => "模型或取证阶段超过了本次等待时间。",
+                HttpRequestException => "分析服务器与模型服务的连接失败。",
+                AiProviderException { StatusCode: 429 } => "模型服务暂时限流。",
+                AiProviderException { StatusCode: 401 or 403 } => "模型服务拒绝了身份验证或访问权限。",
+                AiProviderException { StatusCode: 413 } => "本次证据超过了模型上下文预算。",
+                AiProviderException { StatusCode: 409 } => "此前调查状态已失效，需要重新提问。",
+                _ => "模型没有返回可验证的完整业务答案。"
+            };
+            var fallback = new ChatResponse(
+                $"这次分析未完成：{reason}暂时不能可靠回答你的问题。可展开分析过程查看已执行的检查，然后重试。",
+                EvidenceConfidence.Unknown,
+                toolSession.ExposedCitations,
+                [reason]);
             return fallback with
             {
                 Trace = toolSession.BuildAnalysisTrace(

@@ -9,6 +9,65 @@ namespace CrmLogicLens.Core.Tests;
 public sealed class EvidenceToolSessionTests
 {
     [Fact]
+    public async Task Search_UsesFieldDisplayNameToFindLogicAndKeepsItAheadOfUnrelatedPlugins()
+    {
+        var fixture = CreateFixture();
+        var nodes = fixture.Graph.Nodes.Concat(new[]
+        {
+            new EvidenceNode("field:idcard", "FieldMetadata", "身份证号", "证件字段", "metadata.json", null,
+                EvidenceConfidence.Confirmed, new Dictionary<string, string> { ["Field"] = "new_idcardnumber" }),
+            new EvidenceNode("js:idcard", "JavaScriptFunction", "new_idcardnumber_onChange", "校验输入", "form.js", null,
+                EvidenceConfidence.Confirmed),
+            new EvidenceNode("button:export", "RibbonButton", "导出", "导出按钮", "ribbon.xml", null,
+                EvidenceConfidence.Confirmed)
+        }).ToArray();
+        var session = new EvidenceToolSession(fixture.Store, fixture.Snapshot,
+            new EvidenceGraph(nodes, fixture.Graph.Edges, []));
+        await session.ExecuteAsync("list_current_entity_plugin_steps", "{}", CancellationToken.None);
+        var json = await session.ExecuteAsync("find_business_logic", """{"query":"身份证号的填写逻辑是什么"}""", CancellationToken.None);
+        using var found = JsonDocument.Parse(json);
+        var ids = found.RootElement.GetProperty("matches").EnumerateArray()
+            .Select(item => item.GetProperty("nodeId").GetString()).ToArray();
+        Assert.Contains("field:idcard", ids);
+        Assert.Contains("js:idcard", ids);
+        Assert.DoesNotContain("button:export", ids);
+
+        using var final = JsonDocument.Parse(JsonSerializer.Serialize(session.BuildFinalAnswerContext("身份证号的填写逻辑是什么", 4096)));
+        Assert.Equal("find_business_logic", final.RootElement.GetProperty("toolEvidence")[0].GetProperty("tool").GetString());
+        Assert.Equal("field:idcard", final.RootElement.GetProperty("allowedEvidence")[0].GetProperty("nodeId").GetString());
+    }
+
+    [Fact]
+    public async Task Search_ButtonCategoryDoesNotMatchUnrelatedNodes()
+    {
+        var fixture = CreateFixture();
+        var json = await fixture.Session.ExecuteAsync("find_business_logic",
+            """{"query":"不存在的派工按钮"}""", CancellationToken.None);
+        using var found = JsonDocument.Parse(json);
+        Assert.Empty(found.RootElement.GetProperty("matches").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReportsLiveAndCompletedToolStatus()
+    {
+        var fixture = CreateFixture();
+        var progress = new List<AnalysisTraceStep>();
+        fixture.Session.SetProgressObserver(progress.Add);
+
+        await fixture.Session.ExecuteAsync(
+            "read_javascript_function",
+            "{\"function_name\":\"form_onLoad\"}",
+            CancellationToken.None);
+
+        Assert.True(progress.Count >= 2);
+        Assert.Equal("active", progress[0].Status);
+        Assert.Equal("read_javascript_function", progress[0].ToolName);
+        Assert.Equal("读取相关窗体脚本", progress[0].Title);
+        Assert.Equal(progress[0].Sequence, progress[^1].Sequence);
+        Assert.NotEqual("active", progress[^1].Status);
+    }
+
+    [Fact]
     public async Task PluginTools_AreStrictlyLimitedToCurrentEntity()
     {
         var fixture = CreateFixture();

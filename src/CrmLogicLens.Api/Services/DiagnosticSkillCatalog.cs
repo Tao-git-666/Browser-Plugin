@@ -9,6 +9,7 @@ public sealed record DiagnosticSkill(
     IReadOnlyList<string> Triggers,
     IReadOnlyList<string> RequiredTools,
     IReadOnlyList<string> RequiredWhenAvailableTools,
+    IReadOnlyList<string> RequiredSignals,
     string Instructions,
     bool IsFallback,
     string SourcePath);
@@ -36,7 +37,16 @@ public sealed partial class DiagnosticSkillCatalog
         "read_runtime_errors",
         "read_decompiled_plugin",
         "read_current_form_values",
-        "query_crm_data"
+        "query_crm_data",
+        "search_environment_code", "read_environment_code"
+    };
+    private static readonly HashSet<string> AllowedSignals = new(StringComparer.Ordinal)
+    {
+        "runtime-recording",
+        "recorded-dataverse-queries",
+        "runtime-errors",
+        "crm-data-access",
+        "environment-code-library"
     };
     private readonly IReadOnlyDictionary<string, DiagnosticSkill> _skills;
 
@@ -91,7 +101,10 @@ public sealed partial class DiagnosticSkillCatalog
     public DiagnosticSkill? Find(string id) =>
         _skills.GetValueOrDefault((id ?? string.Empty).Trim());
 
-    public IReadOnlyList<DiagnosticSkillMatch> Search(string query, int limit = 3)
+    public IReadOnlyList<DiagnosticSkillMatch> Search(
+        string query,
+        int limit = 3,
+        IReadOnlySet<string>? availableSignals = null)
     {
         var normalized = (query ?? string.Empty).Trim();
         if (normalized.Length is 0 or > 2_000)
@@ -106,6 +119,7 @@ public sealed partial class DiagnosticSkillCatalog
             .ToArray();
 
         var ranked = _skills.Values
+            .Where(skill => IsApplicable(skill, availableSignals))
             .Select(skill => new DiagnosticSkillMatch(skill, Score(skill, normalized, terms)))
             .Where(match => match.Score > 0)
             .OrderByDescending(match => match.Score)
@@ -118,18 +132,32 @@ public sealed partial class DiagnosticSkillCatalog
             return ranked;
         }
 
-        var fallback = _skills.Values.FirstOrDefault(skill => skill.IsFallback);
+        var fallback = _skills.Values.FirstOrDefault(skill =>
+            skill.IsFallback && IsApplicable(skill, availableSignals));
         return fallback is null ? [] : [new DiagnosticSkillMatch(fallback, 1)];
     }
 
+    public static bool HasAmbiguousTopMatch(IReadOnlyList<DiagnosticSkillMatch> matches)
+    {
+        var candidates = matches
+            .Where(match => !match.Skill.IsFallback)
+            .Take(2)
+            .ToArray();
+        return candidates.Length == 2 && candidates[1].Score * 5 >= candidates[0].Score * 4;
+    }
+
+    private static bool IsApplicable(DiagnosticSkill skill, IReadOnlySet<string>? availableSignals) =>
+        skill.RequiredSignals.Count == 0 ||
+        availableSignals is not null && skill.RequiredSignals.All(availableSignals.Contains);
+
     private static int Score(DiagnosticSkill skill, string query, IReadOnlyList<string> terms)
     {
-        var score = skill.IsFallback ? 1 : 0;
+        var triggerScore = 0;
         foreach (var trigger in skill.Triggers)
         {
             if (query.Contains(trigger, StringComparison.OrdinalIgnoreCase))
             {
-                score += 30 + Math.Min(trigger.Length, 20);
+                triggerScore = Math.Max(triggerScore, 30 + Math.Min(trigger.Length, 20));
                 continue;
             }
             var triggerBigrams = CjkBigrams(trigger);
@@ -138,11 +166,17 @@ public sealed partial class DiagnosticSkillCatalog
                 var shared = triggerBigrams.Count(query.Contains);
                 if (shared >= Math.Max(2, (triggerBigrams.Length + 1) / 2))
                 {
-                    score += 12 + shared;
+                    triggerScore = Math.Max(triggerScore, 12 + shared);
                 }
             }
         }
 
+        if (triggerScore == 0)
+        {
+            return skill.IsFallback ? 1 : 0;
+        }
+
+        var score = triggerScore;
         var searchable = $"{skill.Id} {skill.Description}";
         foreach (var term in terms)
         {
@@ -210,6 +244,7 @@ public sealed partial class DiagnosticSkillCatalog
         var triggers = SplitList(metadata.GetValueOrDefault("triggers"), 32, 80, path, "triggers");
         var required = SplitTools(metadata.GetValueOrDefault("required-tools"), path);
         var requiredWhenAvailable = SplitTools(metadata.GetValueOrDefault("required-when-available"), path);
+        var requiredSignals = SplitSignals(metadata.GetValueOrDefault("requires-signals"), path);
         var instructions = string.Join('\n', lines[(end + 1)..]).Trim();
         if (instructions.Length is 0 or > 24_000)
         {
@@ -223,6 +258,7 @@ public sealed partial class DiagnosticSkillCatalog
             triggers,
             required,
             requiredWhenAvailable,
+            requiredSignals,
             instructions,
             fallback,
             path);
@@ -244,6 +280,16 @@ public sealed partial class DiagnosticSkillCatalog
             throw new InvalidOperationException($"Diagnostic skill references an unknown or non-allow-listed tool: {path}");
         }
         return tools;
+    }
+
+    private static IReadOnlyList<string> SplitSignals(string? value, string path)
+    {
+        var signals = SplitList(value, 8, 80, path, "signal list");
+        if (signals.Any(signal => !AllowedSignals.Contains(signal)))
+        {
+            throw new InvalidOperationException($"Diagnostic skill references an unknown signal: {path}");
+        }
+        return signals;
     }
 
     private static IReadOnlyList<string> SplitList(

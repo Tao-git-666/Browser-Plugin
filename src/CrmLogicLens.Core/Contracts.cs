@@ -88,7 +88,8 @@ public sealed record ChatRequest(
     IReadOnlyList<FormValueQueryResult>? FormValueResults = null,
     string? ContinuationId = null,
     bool RuntimeRecordingConsent = false,
-    IReadOnlyList<RuntimeRecordingEvent>? RuntimeRecording = null);
+    IReadOnlyList<RuntimeRecordingEvent>? RuntimeRecording = null,
+    Guid? EnvironmentLibraryId = null);
 
 public sealed record RuntimeDiagnosticEvidence(
     string Method,

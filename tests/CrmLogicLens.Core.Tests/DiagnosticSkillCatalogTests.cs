@@ -7,6 +7,134 @@ namespace CrmLogicLens.Core.Tests;
 
 public sealed class DiagnosticSkillCatalogTests
 {
+    [Theory]
+    [InlineData("提交按钮点击后报错", "button-execution-error")]
+    [InlineData("命令栏按钮灰色不能点击", "button-not-visible-or-disabled")]
+    [InlineData("new_service 接口500", "custom-api-error")]
+    [InlineData("派工页面没有可用人员", "custom-page-empty-list")]
+    [InlineData("保存后又变回去了", "data-not-updated")]
+    [InlineData("当前审批按钮有什么用", "explain-current-logic")]
+    [InlineData("金额字段不能编辑", "field-not-editable")]
+    [InlineData("折扣字段不显示", "field-not-visible")]
+    [InlineData("Update 插件没触发", "plugin-not-triggered")]
+    [InlineData("保存报错", "save-failed")]
+    [InlineData("身份证号的填写逻辑是什么", "field-value-rules")]
+    [InlineData("证件号码填写格式", "field-value-rules")]
+    [InlineData("金额自动赋值是怎么来的", "field-value-rules")]
+    [InlineData("服务类型为维修时隐藏哪些字段", "field-not-visible")]
+    [InlineData("身份证号保存失败", "save-failed")]
+    public void ProductionSkills_RouteRepresentativeQuestions(string question, string expectedSkillId)
+    {
+        var catalog = LoadProductionCatalog();
+
+        var match = Assert.Single(catalog.Search(question, 1));
+
+        Assert.Equal(expectedSkillId, match.Skill.Id);
+    }
+
+    [Fact]
+    public void ProductionSkills_ReverseWriterRequiresAnEnvironmentLibrary()
+    {
+        var catalog = LoadProductionCatalog();
+        const string question = "设备档案没有生成，是哪个插件创建，触发条件不对吗";
+        Assert.DoesNotContain(catalog.Search(question, 3), match => match.Skill.Id == "reverse-entity-writer");
+        var match = Assert.Single(catalog.Search(question, 1,
+            new HashSet<string>(StringComparer.Ordinal) { "environment-code-library" }));
+        Assert.Equal("reverse-entity-writer", match.Skill.Id);
+        Assert.Contains("search_environment_code", match.Skill.RequiredTools);
+    }
+
+    [Fact]
+    public void ProductionSkills_KeepRecordingDependenciesConditional()
+    {
+        var catalog = LoadProductionCatalog();
+        var customPage = Assert.Single(catalog.Skills, skill => skill.Id == "custom-page-empty-list");
+        var recordedError = Assert.Single(catalog.Skills, skill => skill.Id == "recorded-runtime-error");
+
+        Assert.DoesNotContain("read_recorded_dataverse_queries", customPage.RequiredTools);
+        Assert.Contains("read_recorded_dataverse_queries", customPage.RequiredWhenAvailableTools);
+        Assert.Contains("runtime-recording", recordedError.RequiredSignals);
+        Assert.DoesNotContain(catalog.Search("录制期间报错", 3), match => match.Skill.Id == recordedError.Id);
+        Assert.Equal(
+            recordedError.Id,
+            Assert.Single(catalog.Search(
+                "录制期间报错",
+                1,
+                new HashSet<string>(StringComparer.Ordinal) { "runtime-recording" })).Skill.Id);
+    }
+
+    [Fact]
+    public void ProductionSkills_UseFallbackWhenOnlyGenericDescriptionWordsMatch()
+    {
+        var catalog = LoadProductionCatalog();
+
+        var match = Assert.Single(catalog.Search("页面出现未知错误", 1));
+
+        Assert.Equal("explain-current-logic", match.Skill.Id);
+    }
+
+    [Fact]
+    public async Task ToolSession_DoesNotAutoSelectWhenTopSkillsAreAmbiguous()
+    {
+        const string question = "点击后报错，同时保存失败";
+        var catalog = LoadProductionCatalog();
+        var matches = catalog.Search(question, 3);
+        Assert.True(
+            DiagnosticSkillCatalog.HasAmbiguousTopMatch(matches),
+            string.Join(", ", matches.Select(match => $"{match.Skill.Id}={match.Score}")));
+
+        var snapshotId = Guid.NewGuid();
+        var snapshot = new StoredSnapshot(
+            snapshotId,
+            Guid.NewGuid(),
+            new CrmPageContext(
+                "https://crm.example.test/org", "org", "9.1", "v9.1", "entityrecord",
+                "new_ticket", null, "form-1", null, "工单"),
+            [],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+        var session = new EvidenceToolSession(
+            new EmptyStore(snapshot),
+            snapshot,
+            new EvidenceGraph([], [], []),
+            diagnosticSkills: catalog);
+
+        await session.PrepareDiagnosticSkillAsync(question, CancellationToken.None);
+
+        Assert.Equal(
+            "search_diagnostic_skills",
+            Assert.Single(session.GetDiagnosticSkillReadiness().MissingTools));
+
+        var response = await session.ExecuteAsync(
+            "search_diagnostic_skills",
+            JsonSerializer.Serialize(new { query = question, limit = 1 }),
+            CancellationToken.None);
+        using var document = JsonDocument.Parse(response);
+        Assert.True(document.RootElement.GetProperty("ambiguous").GetBoolean());
+        Assert.Equal(2, document.RootElement.GetProperty("matches").GetArrayLength());
+
+        var rejected = await session.ExecuteAsync(
+            "read_diagnostic_skill",
+            """{"skill_id":"explain-current-logic"}""",
+            CancellationToken.None);
+        using var rejectedDocument = JsonDocument.Parse(rejected);
+        Assert.False(rejectedDocument.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Contains(
+            "最近一次",
+            rejectedDocument.RootElement.GetProperty("error").GetString(),
+            StringComparison.Ordinal);
+
+        var contextJson = JsonSerializer.Serialize(session.BuildConversationContext(question));
+        using var contextDocument = JsonDocument.Parse(contextJson);
+        Assert.Contains(
+            "服务器未自动选择 Skill",
+            contextDocument.RootElement
+                .GetProperty("diagnosticSkills")
+                .GetProperty("rule")
+                .GetString(),
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public void LoadFromDirectory_ParsesSkillsAndPrefersSpecificTrigger()
     {
@@ -32,17 +160,24 @@ public sealed class DiagnosticSkillCatalogTests
                 triggers: 自定义 API,接口400,new_service
                 required-tools: find_business_logic,resolve_custom_api,read_custom_api_implementation
                 required-when-available: read_runtime_errors
+                requires-signals: runtime-errors
                 ---
                 读取实际错误并对照 API 实现。
                 """);
 
             var catalog = DiagnosticSkillCatalog.LoadFromDirectory(root);
-            var match = Assert.Single(catalog.Search("new_service 接口400是什么原因", 1));
+            var withoutRuntimeError = Assert.Single(catalog.Search("new_service 接口400是什么原因", 1));
+            Assert.Equal("general", withoutRuntimeError.Skill.Id);
+            var match = Assert.Single(catalog.Search(
+                "new_service 接口400是什么原因",
+                1,
+                new HashSet<string>(StringComparer.Ordinal) { "runtime-errors" }));
 
             Assert.Equal("custom-api-error", match.Skill.Id);
             Assert.Equal("1.2", match.Skill.Version);
             Assert.Contains("resolve_custom_api", match.Skill.RequiredTools);
             Assert.Contains("read_runtime_errors", match.Skill.RequiredWhenAvailableTools);
+            Assert.Contains("runtime-errors", match.Skill.RequiredSignals);
         }
         finally
         {
@@ -79,6 +214,7 @@ public sealed class DiagnosticSkillCatalogTests
                 "1.0",
                 ["字段不显示"],
                 ["find_business_logic", "trace_evidence"],
+                ["read_runtime_errors"],
                 [],
                 "先确认字段控件，再检查可见性。",
                 false,
@@ -166,6 +302,7 @@ public sealed class DiagnosticSkillCatalogTests
                 ["会发生什么"],
                 ["find_business_logic", "resolve_custom_api"],
                 [],
+                [],
                 "解析自定义 API 后读取实现。",
                 true,
                 "test")
@@ -198,11 +335,157 @@ public sealed class DiagnosticSkillCatalogTests
             step => step.ToolName == "read_custom_api_implementation");
     }
 
+    [Fact]
+    public async Task ToolSession_RejectsSkillWhenRequiredRuntimeSignalIsMissing()
+    {
+        var snapshotId = Guid.NewGuid();
+        var snapshot = new StoredSnapshot(
+            snapshotId,
+            Guid.NewGuid(),
+            new CrmPageContext(
+                "https://crm.example.test/org", "org", "9.1", "v9.1", "entityrecord",
+                "new_ticket", null, "form-1", null, "工单"),
+            [],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+        var catalog = new DiagnosticSkillCatalog(
+        [
+            new DiagnosticSkill(
+                "recorded-runtime-error",
+                "排查已录制错误。",
+                "1.1",
+                ["录制报错"],
+                ["read_recorded_runtime_events"],
+                [],
+                ["runtime-recording"],
+                "先读取录制事件。",
+                false,
+                "test"),
+            new DiagnosticSkill(
+                "explain-current-logic",
+                "一般问题。",
+                "1.0",
+                ["业务逻辑"],
+                ["find_business_logic"],
+                [],
+                [],
+                "查找相关证据。",
+                true,
+                "test")
+        ]);
+        var session = new EvidenceToolSession(
+            new EmptyStore(snapshot),
+            snapshot,
+            new EvidenceGraph([], [], []),
+            diagnosticSkills: catalog);
+
+        await session.ExecuteAsync(
+            "search_diagnostic_skills",
+            """{"query":"录制报错"}""",
+            CancellationToken.None);
+        var result = await session.ExecuteAsync(
+            "read_diagnostic_skill",
+            """{"skill_id":"recorded-runtime-error"}""",
+            CancellationToken.None);
+
+        using var document = JsonDocument.Parse(result);
+        Assert.False(document.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Contains(
+            "runtime-recording",
+            document.RootElement.GetProperty("error").GetString(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ToolSession_CompletesChecklistButPreservesEmptyAndFailedToolEvidenceGaps()
+    {
+        var snapshotId = Guid.NewGuid();
+        var snapshot = new StoredSnapshot(
+            snapshotId,
+            Guid.NewGuid(),
+            new CrmPageContext(
+                "https://crm.example.test/org", "org", "9.1", "v9.1", "entityrecord",
+                "new_ticket", null, "form-1", null, "工单"),
+            [],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+        var catalog = new DiagnosticSkillCatalog(
+        [
+            new DiagnosticSkill(
+                "field-not-visible",
+                "排查字段不显示。",
+                "1.0",
+                ["字段不显示"],
+                ["find_business_logic", "trace_evidence"],
+                [],
+                [],
+                "先定位字段，再追踪证据。",
+                false,
+                "test")
+        ]);
+        var session = new EvidenceToolSession(
+            new EmptyStore(snapshot),
+            snapshot,
+            new EvidenceGraph([], [], []),
+            diagnosticSkills: catalog);
+
+        await session.PrepareDiagnosticSkillAsync("状态字段不显示", CancellationToken.None);
+        await session.ExecuteAsync(
+            "find_business_logic",
+            """{"query":"状态字段"}""",
+            CancellationToken.None);
+        await session.ExecuteAsync(
+            "trace_evidence",
+            """{"node_id":"field:missing","depth":1}""",
+            CancellationToken.None);
+
+        var beforeCheck = session.GetDiagnosticSkillReadiness();
+        Assert.Equal("check_diagnostic_progress", Assert.Single(beforeCheck.MissingTools));
+        Assert.Equal(2, beforeCheck.EvidenceGaps.Count);
+        Assert.Contains(beforeCheck.EvidenceGaps, gap => gap.StartsWith("find_business_logic:", StringComparison.Ordinal));
+        Assert.Contains(beforeCheck.EvidenceGaps, gap => gap.StartsWith("trace_evidence:", StringComparison.Ordinal));
+
+        var response = await session.ExecuteAsync(
+            "check_diagnostic_progress",
+            "{}",
+            CancellationToken.None);
+        using var document = JsonDocument.Parse(response);
+        Assert.True(document.RootElement.GetProperty("ready").GetBoolean());
+        Assert.Equal(2, document.RootElement.GetProperty("evidenceGaps").GetArrayLength());
+        Assert.True(session.GetDiagnosticSkillReadiness().Ready);
+        Assert.Equal(2, session.GetDiagnosticSkillReadiness().EvidenceGaps.Count);
+
+        var finalContextJson = JsonSerializer.Serialize(session.BuildFinalAnswerContext("状态字段不显示", 8_192));
+        using var finalContext = JsonDocument.Parse(finalContextJson);
+        Assert.Equal(
+            2,
+            finalContext.RootElement
+                .GetProperty("diagnosticSkill")
+                .GetProperty("evidenceGaps")
+                .GetArrayLength());
+    }
+
     private static void WriteSkill(string root, string id, string content)
     {
         var directory = Path.Combine(root, id);
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "SKILL.md"), content);
+    }
+
+    private static DiagnosticSkillCatalog LoadProductionCatalog()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "CrmLogicLens.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.NotNull(directory);
+        return DiagnosticSkillCatalog.LoadFromDirectory(Path.Combine(
+            directory.FullName,
+            "src",
+            "CrmLogicLens.Api",
+            "DiagnosticSkills"));
     }
 
     private sealed class EmptyStore(StoredSnapshot snapshot) : IAnalysisStore

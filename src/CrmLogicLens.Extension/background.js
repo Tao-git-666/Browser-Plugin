@@ -1,5 +1,7 @@
 "use strict";
 
+if (typeof importScripts === "function") importScripts("code-library.js");
+
 const DEFAULT_SETTINGS = Object.freeze({
   serverUrl: "http://localhost:5165",
   apiVersion: "auto",
@@ -54,7 +56,7 @@ chrome.webNavigation?.onDOMContentLoaded?.addListener((details) => {
 void configureSidePanel();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "COLLECTION_PROGRESS") {
+  if (message?.type === "COLLECTION_PROGRESS" || message?.type === "CHAT_PROGRESS") {
     return false;
   }
   handleMessage(message)
@@ -132,6 +134,10 @@ async function handleMessage(message) {
       return stopRuntimeRecording();
     case "COLLECT_AND_UPLOAD":
       return collectAndUpload();
+    case "PREPARE_CODE_LIBRARY":
+      return prepareCodeLibrary();
+    case "SYNC_CODE_LIBRARY_BATCH":
+      return syncCodeLibraryBatch(message.index);
     case "TEST_SERVER":
       return testServer(message.serverUrl);
     case "CHECK_JOB":
@@ -139,7 +145,7 @@ async function handleMessage(message) {
     case "GET_EVIDENCE":
       return getEvidence(message.snapshotId);
     case "ASK_QUESTION":
-      return askQuestion(message.snapshotId, message.question);
+      return askQuestion(message.snapshotId, message.question, message.requestId);
     default:
       throw new Error("不支持的扩展操作。请重新加载扩展后再试。");
   }
@@ -253,7 +259,7 @@ async function collectAndUpload() {
     customRibbonCount += 1;
   }
   if (ribbons.length && !customRibbonCount) {
-    warnings.push("当前命令栏中没有找到绑定未托管自定义 JavaScript 的按钮，已排除微软原生 Ribbon 定义。");
+    warnings.push("当前命令栏中没有找到绑定自定义 JavaScript 的按钮，已排除微软原生 Ribbon 定义。");
   }
   artifacts.push(...scripts);
   const pageResult = await collectOpenedCustomPages(located, apiVersion, scripts, warnings);
@@ -1256,24 +1262,22 @@ async function collectForm(located, apiVersion, warnings) {
     if (!record && lastError) {
       warnings.push(`当前窗体 FormXML 读取失败：${friendlyError(lastError)}`);
     }
-    if (record && !isUnmanagedCustomComponent(record)) {
-      warnings.push(`当前窗体“${record.name || located.context.formLabel || formId}”是托管/系统窗体，已按设置排除。`);
-      return null;
-    }
+    // The actual form definition is required to locate customer event bindings,
+    // including customer scripts attached to a managed form.
   }
 
   if (!record?.formxml && located.context.entityName) {
     const entity = odataString(located.context.entityName);
     const filter = `objecttypecode eq '${entity}' and type eq 2`;
     const urls = [
-      `${root}/systemforms?$select=formid,name,formxml,versionnumber,objecttypecode,type,ismanaged,customizationlevel&$filter=${filter} and (ismanaged eq false or customizationlevel eq 1)&$top=25`,
-      `${root}/systemforms?$select=formid,name,formxml,versionnumber,objecttypecode,type,ismanaged&$filter=${filter} and ismanaged eq false&$top=25`
+      `${root}/systemforms?$select=formid,name,formxml,versionnumber,objecttypecode,type,ismanaged,customizationlevel&$filter=${filter}&$top=25`,
+      `${root}/systemforms?$select=formid,name,formxml,versionnumber,objecttypecode,type,ismanaged&$filter=${filter}&$top=25`
     ];
     let lastError = null;
     for (const url of urls) {
       try {
         const result = await crmGetJson(located, url);
-        const forms = (result.value || []).filter(isUnmanagedCustomComponent);
+        const forms = result.value || [];
         record = forms.find((item) => item.name === located.context.formLabel) || forms[0] || null;
         sourceUrl = url;
         if (forms.length > 1 && record && !located.context.formId) {
@@ -1315,6 +1319,10 @@ async function collectForm(located, apiVersion, warnings) {
 }
 
 function isUnmanagedCustomComponent(record) {
+  const name = String(record?.name || "").trim();
+  if (/^(?:microsoft[.\/_]|mscrm[.\/_]|msdyn[_.\/]|msdynce[_.\/]|crm[._\/]|clientglobalcontext\.js|\$)/i.test(name)) return false;
+  // Managed is a packaging flag, not an indication of Microsoft ownership.
+  if (record?.ismanaged === true) return /^[a-z][a-z0-9]*[_.\/]/i.test(name);
   return record?.ismanaged === false || Number(record?.customizationlevel) === 1;
 }
 
@@ -1322,8 +1330,8 @@ function isUnmanagedPluginComponent(record) {
   const identities = [record?.name, record?.typename]
     .filter(Boolean)
     .map((value) => String(value).trim().toLowerCase());
-  if (identities.some((value) => /^(microsoft(?:\.|\s)|mscrm(?:\.|\s)|msdyn[_.])/.test(value))) return false;
-  if (record?.ismanaged === true) return false;
+  if (identities.some((value) => /^(microsoft(?:\.|\s)|mscrm(?:\.|\s)|msdyn[_.]|msdynce[_.]|system(?:\.|\s))/.test(value))) return false;
+  if (record?.ismanaged === true) return identities.length > 0;
   if (record?.customizationlevel !== null && record?.customizationlevel !== undefined) {
     return Number(record.customizationlevel) === 1;
   }
@@ -1674,8 +1682,8 @@ async function collectWebResources(located, apiVersion, names, warnings) {
   const results = await mapLimit(limitedNames, 5, async (name) => {
     const safeName = odataString(name);
     const urls = [
-      `${root}/webresourceset?$select=webresourceid,name,displayname,content,webresourcetype,modifiedon,ismanaged,customizationlevel&$filter=name eq '${safeName}' and (ismanaged eq false or customizationlevel eq 1)&$top=2`,
-      `${root}/webresourceset?$select=webresourceid,name,displayname,content,webresourcetype,modifiedon,ismanaged&$filter=name eq '${safeName}' and ismanaged eq false&$top=2`
+      `${root}/webresourceset?$select=webresourceid,name,displayname,content,webresourcetype,modifiedon,ismanaged,customizationlevel&$filter=name eq '${safeName}'&$top=2`,
+      `${root}/webresourceset?$select=webresourceid,name,displayname,content,webresourcetype,modifiedon,ismanaged&$filter=name eq '${safeName}'&$top=2`
     ];
     let lastError = null;
     for (const url of urls) {
@@ -1720,7 +1728,7 @@ async function collectWebResources(located, apiVersion, names, warnings) {
   });
 
   if (excludedNonCustomCount) {
-    warnings.push(`已排除 ${excludedNonCustomCount} 个托管或微软原生 JavaScript Web Resource 引用。`);
+    warnings.push(`已排除 ${excludedNonCustomCount} 个微软原生或未识别为业务脚本的 Web Resource 引用。`);
   }
   return results.filter(Boolean);
 }
@@ -1746,8 +1754,8 @@ async function collectOpenedCustomPages(located, apiVersion, entryScripts, warni
 
       const safeName = odataString(reference.name);
       const urls = [
-        `${root}/webresourceset?$select=webresourceid,name,displayname,content,webresourcetype,modifiedon,ismanaged,customizationlevel&$filter=name eq '${safeName}' and (ismanaged eq false or customizationlevel eq 1)&$top=2`,
-        `${root}/webresourceset?$select=webresourceid,name,displayname,content,webresourcetype,modifiedon,ismanaged&$filter=name eq '${safeName}' and ismanaged eq false&$top=2`
+        `${root}/webresourceset?$select=webresourceid,name,displayname,content,webresourcetype,modifiedon,ismanaged,customizationlevel&$filter=name eq '${safeName}'&$top=2`,
+        `${root}/webresourceset?$select=webresourceid,name,displayname,content,webresourcetype,modifiedon,ismanaged&$filter=name eq '${safeName}'&$top=2`
       ];
       let record = null;
       let sourceUrl = null;
@@ -1767,7 +1775,7 @@ async function collectOpenedCustomPages(located, apiVersion, entryScripts, warni
       if (!record?.content) {
         warnings.push(lastError
           ? `自定义页面 ${reference.name} 读取失败：${friendlyError(lastError)}`
-          : `自定义页面 ${reference.name} 没有可读取的未托管 HTML 内容。`);
+          : `自定义页面 ${reference.name} 没有可读取的业务 HTML 内容。`);
         pages.set(pageKey, { ...reference, scripts: [] });
         continue;
       }
@@ -2014,13 +2022,13 @@ async function collectPluginCatalog(located, apiVersion, warnings) {
     .filter((item) => customTypeIds.has(normalizeGuid(item._eventhandler_value)));
 
   if (!customSteps.length && !customTypes.length && !customAssemblyIds.size) {
-    warnings.push(`当前实体 ${entityName} 没有找到未托管的自定义插件步骤；微软原生、托管及无法确认自定义层的组件已排除。`);
+    warnings.push(`当前实体 ${entityName} 没有找到可读取的自定义插件步骤；已排除已识别的微软原生及无法确认的组件。`);
     return null;
   }
 
   const excludedStepCount = rawSteps.length - customSteps.length;
   if (excludedStepCount > 0) {
-    warnings.push(`当前实体有 ${excludedStepCount} 个步骤未能追溯到未托管自定义插件程序集，已保守排除。`);
+    warnings.push(`当前实体有 ${excludedStepCount} 个步骤未能追溯到自定义插件程序集，已保守排除。`);
   }
 
   const messageIds = [...new Set(customSteps
@@ -2110,8 +2118,8 @@ async function collectRelevantCustomApiCatalog(located, apiVersion, calls, warni
   for (const call of selectedCalls) {
     const safeName = odataString(call.name);
     const modern = await tryReadCollection(located, [
-      `${root}/customapis?$select=customapiid,name,uniquename,bindingtype,boundentitylogicalname,isfunction,isprivate,_plugintypeid_value,ismanaged,customizationlevel&$filter=uniquename eq '${safeName}' and (ismanaged eq false or customizationlevel eq 1)&$top=3`,
-      `${root}/customapis?$select=customapiid,name,uniquename,bindingtype,boundentitylogicalname,isfunction,isprivate,_plugintypeid_value,ismanaged&$filter=uniquename eq '${safeName}' and ismanaged eq false&$top=3`
+      `${root}/customapis?$select=customapiid,name,uniquename,bindingtype,boundentitylogicalname,isfunction,isprivate,_plugintypeid_value,ismanaged,customizationlevel&$filter=uniquename eq '${safeName}'&$top=3`,
+      `${root}/customapis?$select=customapiid,name,uniquename,bindingtype,boundentitylogicalname,isfunction,isprivate,_plugintypeid_value,ismanaged&$filter=uniquename eq '${safeName}'&$top=3`
     ]);
     modernApis.push(...modern.filter(isUnmanagedPluginComponent));
 
@@ -2245,9 +2253,9 @@ function customApiStepCollectionUrls(root, messageIds) {
   const relation = `(${ids.map((id) => `_sdkmessageid_value eq ${id}`).join(" or ")})`;
   const fields = "sdkmessageprocessingstepid,name,_sdkmessageid_value,_sdkmessagefilterid_value,_eventhandler_value,stage,mode,rank,filteringattributes,statecode";
   return [
-    `${root}/sdkmessageprocessingsteps?$select=${fields},ismanaged,customizationlevel&$filter=${relation} and (ismanaged eq false or customizationlevel eq 1)&$top=60`,
-    `${root}/sdkmessageprocessingsteps?$select=${fields},ismanaged&$filter=${relation} and ismanaged eq false&$top=60`,
-    `${root}/sdkmessageprocessingsteps?$select=${fields},customizationlevel&$filter=${relation} and customizationlevel eq 1&$top=60`
+    `${root}/sdkmessageprocessingsteps?$select=${fields},ismanaged,customizationlevel&$filter=${relation}&$top=60`,
+    `${root}/sdkmessageprocessingsteps?$select=${fields},ismanaged&$filter=${relation}&$top=60`,
+    `${root}/sdkmessageprocessingsteps?$select=${fields},customizationlevel&$filter=${relation}&$top=60`
   ];
 }
 
@@ -2321,9 +2329,9 @@ function customStepCollectionUrls(root, filterIds, remainingLimit = PLUGIN_QUERY
   const fields = "sdkmessageprocessingstepid,name,_sdkmessageid_value,_sdkmessagefilterid_value,_eventhandler_value,stage,mode,rank,filteringattributes,statecode";
   const top = Math.max(1, Math.min(PLUGIN_QUERY_LIMITS.maxEntitySteps, Number(remainingLimit) || 1));
   return [
-    `${root}/sdkmessageprocessingsteps?$select=${fields},ismanaged,customizationlevel&$filter=${relation} and (ismanaged eq false or customizationlevel eq 1)&$top=${top}`,
-    `${root}/sdkmessageprocessingsteps?$select=${fields},ismanaged&$filter=${relation} and ismanaged eq false&$top=${top}`,
-    `${root}/sdkmessageprocessingsteps?$select=${fields},customizationlevel&$filter=${relation} and customizationlevel eq 1&$top=${top}`
+    `${root}/sdkmessageprocessingsteps?$select=${fields},ismanaged,customizationlevel&$filter=${relation}&$top=${top}`,
+    `${root}/sdkmessageprocessingsteps?$select=${fields},ismanaged&$filter=${relation}&$top=${top}`,
+    `${root}/sdkmessageprocessingsteps?$select=${fields},customizationlevel&$filter=${relation}&$top=${top}`
   ];
 }
 
@@ -2416,7 +2424,7 @@ async function fetchCustomRecordsByIds(located, label, collectionUrl, selectVari
     warnings.push(`${label}中有 ${failureCount} 个当前实体步骤引用的记录无法读取，已保守排除。`);
   }
   if (nonCustomCount) {
-    warnings.push(`${label}中有 ${nonCustomCount} 个托管或微软原生记录，已排除。`);
+    warnings.push(`${label}中有 ${nonCustomCount} 个微软原生或无法确认的记录，已排除。`);
   }
   if (compatibilityFallbackCount) {
     warnings.push(`${label}中有 ${compatibilityFallbackCount} 个记录只能用旧版兼容字段判断自定义层，已同时应用微软组件名称前缀保守排除。`);
@@ -2653,7 +2661,7 @@ async function getEvidence(snapshotId) {
   return serviceRequest(serverUrl, `/api/v1/snapshots/${encodeURIComponent(id)}/evidence`, { method: "GET" });
 }
 
-async function askQuestion(snapshotId, question) {
+async function askQuestion(snapshotId, question, requestId) {
   const id = requireIdentifier(snapshotId, "快照 ID");
   const normalizedQuestion = String(question || "").trim();
   if (!normalizedQuestion) {
@@ -2665,6 +2673,9 @@ async function askQuestion(snapshotId, question) {
   const session = await getSession();
   const settings = await getSettings();
   const serverUrl = session?.snapshotId === snapshotId && session.serverUrl ? session.serverUrl : settings.serverUrl;
+  const libraryMap = (await chrome.storage.local.get("codeLibraries")).codeLibraries || {};
+  const environmentLibraryId = settings.includePluginAssemblies && typeof codeLibraryScope === "function"
+    ? libraryMap[codeLibraryScope(serverUrl, session?.context?.organizationUrl)]?.libraryId || null : null;
   const recordingStore = await chrome.storage.session.get("runtimeRecording");
   const runtimeRecording = recordingMatchesSession(recordingStore.runtimeRecording, session)
     ? recordingStore.runtimeRecording.events.slice(0, 100)
@@ -2685,11 +2696,12 @@ async function askQuestion(snapshotId, question) {
   }
   let accumulatedTrace = [];
   for (let round = 0; round < 4; round += 1) {
-    const response = await serviceRequest(serverUrl, "/api/v1/chat", {
+    const response = await serviceStreamRequest(serverUrl, "/api/v1/chat/stream", {
       method: "POST",
       body: {
         snapshotId: id,
         question: normalizedQuestion,
+        environmentLibraryId,
         dataAccessConsent: settings.allowCrmDataAccess,
         dataResults: [...dataResults.values()],
         runtimeDiagnostics,
@@ -2698,6 +2710,8 @@ async function askQuestion(snapshotId, question) {
         runtimeRecordingConsent: runtimeRecording.length > 0,
         runtimeRecording
       }
+    }, (event) => {
+      broadcastChatProgress(requestId, event);
     });
     continuationId = response.continuationId || null;
     accumulatedTrace = mergeAnalysisTrace(accumulatedTrace, response.trace);
@@ -2709,6 +2723,15 @@ async function askQuestion(snapshotId, question) {
     if (!settings.allowCrmDataAccess) {
       throw new Error("AI 请求读取 CRM 数据，但用户尚未在连接设置中授权。");
     }
+    broadcastChatProgress(requestId, {
+      type: "progress",
+      step: {
+        title: "读取当前 CRM 数据",
+        summary: "正在通过当前登录用户执行模型选定的只读查询。",
+        toolName: requests.length ? "query_crm_data" : "read_current_form_values",
+        status: "active"
+      }
+    });
     const fetched = await executeCrmDataRequests(requests, settings, session);
     for (const result of fetched) {
       dataResults.set(result.requestId, result);
@@ -2719,6 +2742,22 @@ async function askQuestion(snapshotId, question) {
     }
   }
   throw new Error("AI 在一次问答中请求了过多批次的 CRM 数据，请缩小问题范围后重试。");
+}
+
+function broadcastChatProgress(requestId, event) {
+  if (!requestId || !event || event.type !== "progress") return;
+  try {
+    const delivery = chrome.runtime.sendMessage({
+      type: "CHAT_PROGRESS",
+      requestId,
+      event
+    });
+    if (delivery && typeof delivery.catch === "function") {
+      delivery.catch(() => {});
+    }
+  } catch {
+    // The side panel may have been closed while the analysis keeps running.
+  }
 }
 
 function recordingMatchesSession(recording, session) {
@@ -3020,6 +3059,80 @@ async function serviceRequest(candidateUrl, path, options) {
     throw new Error(`分析服务器返回 ${response.status}：${detail}`);
   }
   return payload || {};
+}
+
+async function serviceStreamRequest(candidateUrl, path, options, onEvent) {
+  const serverUrl = normalizeServerUrl(candidateUrl);
+  const method = options?.method || "POST";
+  const headers = { Accept: "application/x-ndjson" };
+  const request = {
+    method,
+    credentials: "include",
+    cache: "no-store",
+    redirect: "error",
+    referrerPolicy: "no-referrer",
+    headers
+  };
+  if (options?.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    request.body = JSON.stringify(options.body);
+  }
+
+  let response;
+  try {
+    response = await fetch(`${serverUrl}${path}`, request);
+  } catch (error) {
+    throw new Error(`无法访问分析服务器：${friendlyError(error)}。请检查服务器地址、证书和 CORS 设置。`);
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    let payload = text;
+    try { payload = text ? JSON.parse(text) : null; } catch { /* keep text */ }
+    const detail = parseServiceError(payload) || response.statusText || "请求未完成";
+    throw new Error(`分析服务器返回 ${response.status}：${detail}`);
+  }
+  if (!response.body || typeof response.body.getReader !== "function") {
+    throw new Error("分析服务器未返回可读取的状态流，请更新 Edge 浏览器或分析服务器。 ");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = null;
+
+  const consumeLine = (line) => {
+    if (!line.trim()) return;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      throw new Error("分析服务器返回了无效的状态流。 ");
+    }
+    if (event.type === "progress") {
+      onEvent?.(event);
+    } else if (event.type === "result") {
+      result = event.response || {};
+    } else if (event.type === "error") {
+      throw new Error(event.error || "分析服务器未能完成本次问题。 ");
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline).replace(/\r$/, "");
+      buffer = buffer.slice(newline + 1);
+      consumeLine(line);
+    }
+    if (done) break;
+  }
+  consumeLine(buffer);
+  if (result == null) {
+    throw new Error("分析状态流已结束，但没有返回最终业务答案。 ");
+  }
+  return result;
 }
 
 function normalizeServerUrl(value) {

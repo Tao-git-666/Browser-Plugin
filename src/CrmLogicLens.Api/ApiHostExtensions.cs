@@ -97,6 +97,7 @@ public static class ApiHostExtensions
         builder.Services.AddSingleton<SnapshotIngestionService>();
         builder.Services.AddSingleton<DecompilerProcessService>();
         builder.Services.AddSingleton<DecompiledArtifactService>();
+        builder.Services.AddSingleton<EnvironmentCodeLibrary>();
         builder.Services.AddSingleton(services =>
         {
             var environment = services.GetRequiredService<IWebHostEnvironment>();
@@ -241,6 +242,7 @@ public static class ApiHostExtensions
         options.MaxCompletionTokens + 8_192 < options.MaxContextTokens &&
         options.MaxEvidenceCharacters is >= 4_096 and <= 500_000 &&
         options.MaxInvestigationSeconds is >= 60 and <= 3_600 &&
+        options.FinalAnswerReserveSeconds is >= 5 and <= 180 &&
         options.MaxToolResultCharacters >= 4_096 &&
         options.MaxToolResultCharacters <= options.MaxEvidenceCharacters;
 
