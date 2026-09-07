@@ -17,6 +17,24 @@ dotnet publish .\src\CrmLogicLens.Api\CrmLogicLens.Api.csproj -c Release -o .\pu
 
 将 `publish\api` 的内容复制到 IIS 站点目录。
 
+### 后续版本一键部署
+
+首次完成 IIS 站点、HTTPS、Windows 身份验证、应用程序池和目录 ACL 后，后续版本可以在开发机运行仓库内置脚本：
+
+```powershell
+.\scripts\deploy-windows-server.ps1 `
+  -ComputerName AI-SERVER01 `
+  -SiteRoot 'D:\CrmLogicLens\Api' `
+  -DecompilerRoot 'D:\CrmLogicLens\Decompiler' `
+  -BackupRoot 'D:\CrmLogicLens\Backups' `
+  -AppPoolName 'CrmLogicLensPool' `
+  -HealthUrl 'https://logiclens.contoso.local/health'
+```
+
+该脚本会依次运行测试、发布 API 和反编译 Worker、通过 PowerShell Remoting 传输压缩包、备份旧版本、停止并重启 IIS 应用程序池，然后从部署机访问 `/health`。如果文件替换或健康检查失败，会自动恢复旧版本。服务器上的 `appsettings.Local.json`、`appsettings.Production.json`、外置 `Data` 目录不会被发布包覆盖。
+
+前置条件：开发机使用 PowerShell 5.1 或更高版本和 .NET 10 SDK；服务器已开启 PowerShell Remoting，执行账号是服务器管理员或已被委派 IIS/目标目录权限。可先使用 `-WhatIf` 查看目标，也可通过 `-Credential (Get-Credential)` 指定部署账号。只有已经单独完成测试时才使用 `-SkipTests`。
+
 ## 2. 生产配置
 
 在部署目录中创建 `appsettings.Production.json`，例如：

@@ -35,6 +35,7 @@ const stepUrlsForFilters = vm.runInContext("customStepCollectionUrls", context);
 const normalizeNextLink = vm.runInContext("normalizeCrmCollectionLink", context);
 const collectPluginCatalog = vm.runInContext("collectPluginCatalog", context);
 const collectPluginAssemblies = vm.runInContext("collectPluginAssemblies", context);
+const serviceStreamRequest = vm.runInContext("serviceStreamRequest", context);
 const defaultSettings = vm.runInContext("DEFAULT_SETTINGS", context);
 
 const ribbon = `
@@ -67,7 +68,11 @@ assert.equal(isCustom({ ismanaged: true, customizationlevel: 0 }), false);
 assert.equal(isCustomPlugin({ name: "new.BusinessPlugin", ismanaged: false }), true);
 assert.equal(isCustomPlugin({ name: "Microsoft.Crm.NativePlugin", ismanaged: false }), false);
 assert.equal(isCustomPlugin({ name: "System native step", ismanaged: false, customizationlevel: 0 }), false);
-assert.equal(isCustomPlugin({ name: "new.ManagedPlugin", ismanaged: true, customizationlevel: 1 }), false);
+assert.equal(isCustomPlugin({ name: "new.ManagedPlugin", ismanaged: true, customizationlevel: 1 }), true);
+assert.equal(isCustom({ name: "new_/business.js", ismanaged: true, customizationlevel: 0 }), true);
+assert.equal(isCustom({ name: "msdyn_/native.js", ismanaged: true, customizationlevel: 1 }), false);
+assert.equal(isCustom({ name: "msdyn_/native.js", ismanaged: false }), false);
+assert.equal(isCustomPlugin({ name: "Microsoft.Crm.NativePlugin", ismanaged: true }), false);
 assert.equal(defaultSettings.includePluginAssemblies, true);
 assert.equal(defaultSettings.allowCrmDataAccess, false);
 
@@ -89,7 +94,7 @@ assert.ok(scopedStepUrls.every((url) => url.includes(`_sdkmessagefilterid_value 
 assert.ok(scopedStepUrls.every((url) => url.includes(`_sdkmessagefilterid_value eq ${filterId2}`)));
 assert.ok(scopedStepUrls.every((url) => url.includes("$filter=")));
 assert.ok(scopedStepUrls.every((url) => url.includes("$top=75")));
-assert.ok(scopedStepUrls.some((url) => url.includes("ismanaged eq false")));
+assert.ok(scopedStepUrls.every((url) => !url.includes("ismanaged eq false")));
 
 const normalizedNextLink = normalizeNextLink(
   "https://crm-internal.contoso.local/Contoso/api/data/v9.1/sdkmessageprocessingsteps?$skiptoken=next",
@@ -101,7 +106,7 @@ assert.throws(() => normalizeNextLink(
   "https://crm-internal.contoso.local/OtherOrg/api/data/v9.1/sdkmessageprocessingsteps?$skiptoken=next",
   "https://crm/Contoso/api/data/v9.1/sdkmessageprocessingsteps?$select=name"));
 
-async function runPluginScopeTests() {
+async function runPluginScopeTests(customerManaged = false) {
   const stepId = "33333333-3333-3333-3333-333333333333";
   const managedStepId = "44444444-4444-4444-4444-444444444444";
   const typeId = "55555555-5555-5555-5555-555555555555";
@@ -148,7 +153,7 @@ async function runPluginScopeTests() {
             mode: 0,
             rank: 1,
             statecode: 0,
-            ismanaged: false
+            ismanaged: customerManaged
           },
           {
             sdkmessageprocessingstepid: managedStepId,
@@ -171,7 +176,7 @@ async function runPluginScopeTests() {
         typename: "Contoso.Crm.NewCasePlugin",
         name: "Contoso.Crm.NewCasePlugin",
         _pluginassemblyid_value: assemblyId,
-        ismanaged: false
+        ismanaged: customerManaged
       };
     }
     if (url.includes(`/pluginassemblies(${assemblyId})`)) {
@@ -181,7 +186,7 @@ async function runPluginScopeTests() {
         version: "1.0.0.0",
         sourcetype: 0,
         isolationmode: 2,
-        ismanaged: false
+        ismanaged: customerManaged
       };
     }
     if (url.includes(`/sdkmessages(${messageId})`)) {
@@ -289,7 +294,66 @@ async function runPluginScopeTests() {
   assert.equal(noEntityCalls.length, 0);
 }
 
+async function runStreamingChatTests() {
+  const encoder = new TextEncoder();
+  const chunks = [
+    encoder.encode('{"type":"progress","step":{"title":"读取相关窗体脚本","toolName":"read_javascript_function","status":"active"}}\n{"type":"pro'),
+    encoder.encode('gress","step":{"title":"读取相关窗体脚本","toolName":"read_javascript_function","status":"completed"}}\n'),
+    encoder.encode('{"type":"result","response":{"answer":"已确认脚本逻辑","citations":[]}}\n')
+  ];
+  context.fetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    body: {
+      getReader() {
+        let index = 0;
+        return {
+          async read() {
+            return index < chunks.length
+              ? { value: chunks[index++], done: false }
+              : { value: undefined, done: true };
+          }
+        };
+      }
+    }
+  });
+  const progress = [];
+  const response = await serviceStreamRequest(
+    "http://localhost:5165",
+    "/api/v1/chat/stream",
+    { method: "POST", body: { snapshotId: "snapshot", question: "测试" } },
+    event => progress.push(event));
+
+  assert.equal(progress.length, 2);
+  assert.equal(progress[0].step.toolName, "read_javascript_function");
+  assert.equal(progress[1].step.status, "completed");
+  assert.equal(response.answer, "已确认脚本逻辑");
+}
+
+async function runManagedScriptTests() {
+  const urls = [];
+  context.__mockCrmGetJson = async (_located, url) => {
+    urls.push(url);
+    assert.ok(!url.includes("ismanaged eq false"));
+    const native = url.includes("msdyn_");
+    return { value: [{ name: native ? "msdyn_/native.js" : "new_/field.js", ismanaged: true,
+      customizationlevel: 0, webresourcetype: 3,
+      content: Buffer.from("function validate() { return true; }").toString("base64") }] };
+  };
+  vm.runInContext("crmGetJson = globalThis.__mockCrmGetJson", context);
+  const collect = vm.runInContext("collectWebResources", context);
+  const result = await collect({ context: { organizationUrl: "https://crm.example/Org" } }, "v9.0",
+    ["new_/field.js", "msdyn_/native.js"], []);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].name, "new_/field.js");
+  assert.equal(urls.length, 2);
+}
+
 runPluginScopeTests()
+  .then(() => runPluginScopeTests(true))
+  .then(runManagedScriptTests)
+  .then(runStreamingChatTests)
   .then(() => console.log("Extension entity-scoped custom-component filtering smoke test passed."))
   .catch((error) => {
     console.error(error);

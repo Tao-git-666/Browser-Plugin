@@ -13,6 +13,63 @@ namespace CrmLogicLens.Core.Tests;
 public sealed class OpenAiCompatibleChatClientTests
 {
     [Fact]
+    public async Task ExplainAsync_ReusesEquivalentToolArgumentsWithoutRepeatingEvidencePayload()
+    {
+        var count = 0;
+        var handler = new StubHandler(async request =>
+        {
+            count++;
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            if (count <= 2)
+            {
+                var arguments = count == 1 ? "{\"query\":\"审批按钮\",\"limit\":4}" : "{\"limit\":4,\"query\":\"审批按钮\"}";
+                return JsonResponse(JsonSerializer.Serialize(new
+                {
+                    choices = new[] { new { finish_reason = "tool_calls", message = new
+                    {
+                        tool_calls = new[] { new { id = $"call-{count}", type = "function", function = new { name = "find_business_logic", arguments } } }
+                    } } }
+                }));
+            }
+            if (count == 3)
+            {
+                var messages = body.RootElement.GetProperty("messages");
+                using var reused = JsonDocument.Parse(messages[5].GetProperty("content").GetString()!);
+                Assert.True(reused.RootElement.GetProperty("reused").GetBoolean());
+                Assert.Contains("ribbon-button:approval", messages[3].GetProperty("content").GetString());
+                Assert.DoesNotContain("ribbon-button:approval", messages[5].GetProperty("content").GetString());
+                return JsonResponse("""{"choices":[{"finish_reason":"stop","message":{"content":"调查已完成"}}]}""");
+            }
+            return JsonResponse("""{"choices":[{"finish_reason":"stop","message":{"content":"{\"answer\":\"这是提交审批按钮。\",\"evidenceIds\":[\"ribbon-button:approval\"]}"}}]}""");
+        });
+        var id = Guid.NewGuid();
+        var result = await CreateClient(handler).ExplainAsync(new ChatRequest(id, "审批按钮"), CreateSession(id), CancellationToken.None);
+        Assert.Equal(4, count);
+        Assert.Single(result.Trace!, step => step.ToolName == "find_business_logic");
+    }
+
+    [Fact]
+    public async Task ExplainAsync_FinalizesCollectedEvidenceOnContextOverflow()
+    {
+        var count = 0;
+        var handler = new StubHandler(async request =>
+        {
+            count++;
+            if (count == 1)
+                return JsonResponse("""{"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"find","type":"function","function":{"name":"find_business_logic","arguments":"{\"query\":\"审批按钮\"}"}}]}}]}""");
+            if (count == 2)
+                return new HttpResponseMessage(HttpStatusCode.RequestEntityTooLarge) { Content = new StringContent("{}") };
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            Assert.False(body.RootElement.TryGetProperty("tools", out _));
+            return JsonResponse("""{"choices":[{"finish_reason":"stop","message":{"content":"{\"answer\":\"这是提交审批按钮。\",\"evidenceIds\":[\"ribbon-button:approval\"]}"}}]}""");
+        });
+        var id = Guid.NewGuid();
+        var result = await CreateClient(handler).ExplainAsync(new ChatRequest(id, "审批按钮"), CreateSession(id), CancellationToken.None);
+        Assert.Equal(3, count);
+        Assert.Contains(result.Unknowns, item => item.Contains("上下文"));
+    }
+
+    [Fact]
     public async Task ExplainAsync_ExecutesToolAndPreservesReasoningBeforeBusinessAnswer()
     {
         var requestCount = 0;
@@ -78,6 +135,71 @@ public sealed class OpenAiCompatibleChatClientTests
         Assert.Equal(3, result.Trace.Count);
         Assert.Contains(result.Trace, step => step.ToolName == "find_business_logic");
         Assert.Equal("生成回答", result.Trace[^1].Title);
+    }
+
+    [Fact]
+    public async Task ExplainAsync_ContinuesWhenProviderReturnsReasoningOnly()
+    {
+        var requestCount = 0;
+        var handler = new StubHandler(async request =>
+        {
+            requestCount++;
+            var body = await request.Content!.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(body);
+
+            if (requestCount == 1)
+            {
+                return JsonResponse(
+                    """
+                    {"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":null,"reasoning_content":"尚未完成的字段调查"}}]}
+                    """);
+            }
+
+            if (requestCount == 2)
+            {
+                var messages = document.RootElement.GetProperty("messages");
+                Assert.Equal(4, messages.GetArrayLength());
+                Assert.Equal("assistant", messages[2].GetProperty("role").GetString());
+                Assert.Equal(JsonValueKind.Null, messages[2].GetProperty("content").ValueKind);
+                Assert.Equal("尚未完成的字段调查", messages[2].GetProperty("reasoning_content").GetString());
+                Assert.Equal("user", messages[3].GetProperty("role").GetString());
+                Assert.Contains("继续当前调查", messages[3].GetProperty("content").GetString(), StringComparison.Ordinal);
+                return JsonResponse(
+                    """
+                    {"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"reasoning_content":"继续读取按钮证据","tool_calls":[{"id":"call-1","type":"function","function":{"name":"find_business_logic","arguments":"{\"query\":\"审批按钮\",\"limit\":4}"}}]}}]}
+                    """);
+            }
+
+            if (requestCount == 3)
+            {
+                var messages = document.RootElement.GetProperty("messages");
+                Assert.Equal("尚未完成的字段调查", messages[2].GetProperty("reasoning_content").GetString());
+                Assert.Equal("继续读取按钮证据", messages[4].GetProperty("reasoning_content").GetString());
+                Assert.Equal("tool", messages[5].GetProperty("role").GetString());
+                return JsonResponse(
+                    """
+                    {"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"调查已完成"}}]}
+                    """);
+            }
+
+            Assert.False(document.RootElement.TryGetProperty("tools", out _));
+            return JsonResponse(
+                """
+                {"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"{\"answer\":\"点击后会把当前记录提交审批。\",\"evidenceIds\":[\"ribbon-button:approval\"]}"}}]}
+                """);
+        });
+        var client = CreateClient(handler);
+        var snapshotId = Guid.NewGuid();
+
+        var result = await client.ExplainAsync(
+            new ChatRequest(snapshotId, "审批按钮会做什么？"),
+            CreateSession(snapshotId),
+            CancellationToken.None);
+
+        Assert.Equal(4, requestCount);
+        Assert.Equal("点击后会把当前记录提交审批。", result.Answer);
+        Assert.Single(result.Citations);
+        Assert.Equal("ribbon-button:approval", result.Citations[0].NodeId);
     }
 
     [Fact]
@@ -232,7 +354,7 @@ public sealed class OpenAiCompatibleChatClientTests
                 var messages = document.RootElement.GetProperty("messages");
                 Assert.Equal("尚未完成的调查状态", messages[2].GetProperty("reasoning_content").GetString());
                 Assert.Equal("tool", messages[3].GetProperty("role").GetString());
-                clock.Advance(TimeSpan.FromMinutes(10));
+                clock.Advance(TimeSpan.FromMinutes(8.5));
                 return JsonResponse(
                     """
                     {"choices":[{"finish_reason":"tool_calls","message":{"content":null,"reasoning_content":"继续调查","tool_calls":[{"id":"trace-1","type":"function","function":{"name":"trace_evidence","arguments":"{\"node_id\":\"ribbon-button:approval\"}"}}]}}]}
@@ -255,7 +377,8 @@ public sealed class OpenAiCompatibleChatClientTests
         Assert.Equal(3, requestCount);
         Assert.Contains("提交审批按钮", result.Answer, StringComparison.Ordinal);
         Assert.Single(result.Citations);
-        Assert.Contains(result.Unknowns, item => item.Contains("15 分钟", StringComparison.Ordinal));
+        Assert.Contains(result.Unknowns, item => item.Contains("预留 90 秒", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Trace!, step => step.ToolName == "trace_evidence");
         Assert.Equal("completed", result.Trace![^1].Status);
     }
 
@@ -517,6 +640,7 @@ public sealed class OpenAiCompatibleChatClientTests
                 "1.0",
                 ["有什么用"],
                 ["find_business_logic"],
+                [],
                 [],
                 "先找到相关入口。",
                 true,

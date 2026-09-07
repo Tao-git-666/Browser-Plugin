@@ -26,5 +26,7 @@ public sealed class AiModelOptions
 
     public int MaxInvestigationSeconds { get; set; } = 900;
 
+    public int FinalAnswerReserveSeconds { get; set; } = 90;
+
     public int MaxToolResultCharacters { get; set; } = 160_000;
 }
