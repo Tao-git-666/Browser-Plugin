@@ -1,15 +1,17 @@
 ---
 name: button-execution-error
 description: 排查点击 D365 按钮后出现错误、没有完成动作或收到服务端失败响应的问题。
-version: 1.2
-triggers: 点击按钮报错,按钮出现报错,按钮执行失败,点了没反应,按钮失败,点击后报错,按钮操作失败
-required-tools: find_business_logic,trace_evidence,read_javascript_function
+version: 1.3
+triggers: 点击按钮报错,按钮出现报错,按钮执行失败,点了没反应,按钮失败,点击后报错,按钮操作失败,按钮一直转圈,按钮重复提交,按钮打开弹窗失败,点按钮没反应
+required-tools: find_business_logic,trace_evidence
 required-when-available: read_recorded_runtime_events,read_runtime_errors
 ---
 
 ## 取证顺序
 
-从按钮、命令和绑定函数追踪实际调用。读取按钮函数后，区分直接保存、Dataverse Web API、自定义 API/Action 和纯客户端逻辑。
+先区分按钮是否可点击；未显示或已禁用时按按钮状态问题重新匹配 Skill。确认按钮所在位置（窗体、主网格或子网格）、当前实体与选择对象，从已返回的按钮节点追踪命令和绑定函数。同名按钮不能视为同一入口。
+
+存在绑定函数时调用 `read_javascript_function`，必要时指定 library 区分同名函数；跟进实际调用的公共封装，区分直接保存、Dataverse Web API、自定义 API/Action、打开页面和纯客户端逻辑。没有函数证据时不编造函数名来完成检查。
 
 ## 条件分支
 
@@ -17,6 +19,19 @@ required-when-available: read_recorded_runtime_events,read_runtime_errors
 - 存在已观测失败响应时，把请求路径、状态码和有限响应正文与对应代码分支对照。
 - 只有代码分支依赖当前记录值时，才按授权读取必要字段。
 
+## 场景与处理
+
+| 现象 | 处理方式与判断边界 |
+| --- | --- |
+| 点了没有反应 | 检查是否提前 return、未满足选择数量、取消确认框或参数为空；没有录制到请求不能直接认定没有执行。 |
+| 一直转圈 | 检查 Promise 的 resolve/reject、异常捕获和关闭进度提示的路径；区分请求未完成与请求完成后 UI 未恢复，未捕获的请求不是已确认超时。 |
+| 仅网格按钮报错 | 核对 SelectedControl/SelectedControlSelectedItemIds 等实际参数与函数使用方式，不能拿窗体 formContext 的调用约定替代。 |
+| 打开弹窗失败 | 追踪页面地址、传参和加载脚本；弹窗已打开但列表无数据时切换空列表诊断。 |
+| 多次提示或重复提交 | 查重复事件绑定、递归调用和代码中的重复请求；点击次数与请求关联不足时仅列候选，不重放提交验证。 |
+| 页面提示成功却无结果 | 检查提示是否在真实成功分支、是否解析业务返回码，再切换数据未更新诊断；提示文本不是事务提交证据。 |
+
 ## 停止条件
 
 已定位失败发生在按钮规则、客户端函数、服务端接口或未知边界之一，并取得支持该定位的直接证据；否则列出尚缺的运行时响应或字段条件。不得用同实体的任意 Create/Update 插件步骤替代按钮的真实调用链。
+
+给出有证据支持的处理建议及验证点；诊断不执行按钮或写请求。回答前调用 `check_diagnostic_progress`，保留工具报告的 evidenceGaps，必查项完成不等于原因已确认。

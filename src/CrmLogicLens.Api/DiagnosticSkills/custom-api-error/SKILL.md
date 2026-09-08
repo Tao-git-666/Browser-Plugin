@@ -1,21 +1,34 @@
 ---
 name: custom-api-error
-description: 排查 D365 自定义 API、Action 或项目封装接口返回 4xx/5xx 的问题。
-version: 1.2
-triggers: 自定义API报错,自定义 API 报错,Action报错,接口400,接口500,API报错,invokeHiddenApiAsync
-required-tools: find_business_logic,read_javascript_function,resolve_custom_api,read_custom_api_implementation
-required-when-available: read_runtime_errors
+description: 排查 D365 自定义 API、Action 或项目封装接口的失败响应、业务错误与超时，沿实际调用定位实现。
+version: 1.3
+triggers: 自定义API报错,自定义 API 报错,Action报错,接口400,接口500,API报错,invokeHiddenApiAsync,接口403,接口404,接口超时,Action执行失败,API返回失败,接口返回业务错误
+required-tools: find_business_logic,trace_evidence
+required-when-available: read_recorded_runtime_events,read_runtime_errors
 ---
 
 ## 取证顺序
 
-确认前端传入的操作名、业务路由和可见参数，再解析 API 的注册类型、程序集和实现代码。不能用当前实体普通插件步骤代替 API 实现。
+从已采集入口调用 `find_business_logic` 和 `trace_evidence`，读取已确认的前端函数，确认操作名、业务路由、绑定对象与参数构造。脚本证据已确认操作名时调用 `resolve_custom_api`，得到真实 CustomApi nodeId 后必须调用 `read_custom_api_implementation`；服务器也会追加实现必查项。不能用当前实体普通插件步骤代替 API 实现。
+
+仅有用户口述的接口名称或网络路径、没有脚本引用证据时，不绕过解析工具的范围限制；说明需补采调用脚本。解析未成功时不编造节点 ID、反复读取不存在的实现。
 
 ## 条件分支
 
 - 存在实际失败响应时，优先使用 operation、路由、状态码和错误文本定位实现分支。
 - 参数或当前记录条件决定分支时，只读取已授权的必要字段。
 - 没有响应正文时，不得猜测服务器最终抛出的具体信息。
+
+## 场景与处理
+
+| 现象 | 处理方式与判断边界 |
+| --- | --- |
+| 400 或参数错误 | 比较代码中的参数名、类型、必选项、绑定实体与元数据；无请求体时只能确认构造逻辑，不能声称已看到本次发送值。 |
+| 401/403 | 从响应识别会话、访问拒绝或执行身份线索；HTTP 状态本身不足以定位到某个安全角色。 |
+| 404 | 核对组织地址、API 版本、操作名和绑定路径；保留注册未采集与资源不可访问的区别。 |
+| 500 或聚合异常 | 跟进内部错误、包装层和业务路由；常见包装文本不能确定业务根因。 |
+| 2xx 但业务失败 | 查响应解析、业务 success/code/message 条件和前端 catch；HTTP 成功不保证业务动作成功。 |
+| 超时或响应丢失 | 区分客户端等待与服务端执行状态，结果未知时不重放有副作用的 API。 |
 
 ## 停止条件
 
@@ -30,3 +43,5 @@ required-when-available: read_runtime_errors
 ## 错误证据优先级
 
 失败响应或可读取的运行日志用于确认本次执行，代码中的 throw/catch 用于解释可能路径。“发生一个或多个错误”是包装错误，不足以确定内部异常。没有内部异常和实际分支证据时，给出已确认的失败位置及缺少的证据，不列举与已发生请求矛盾的前置校验作为本次原因。
+
+本地部署不一定支持在线版全部 Custom API 能力；按实际版本与注册工件识别旧式 Action 或项目封装。回答前调用 `check_diagnostic_progress`，把未取得的参数、依赖 DLL 或日志列为具体缺口，并说明对应的补证方式。
